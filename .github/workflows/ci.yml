@@ -7,20 +7,8 @@ on:
     branches: [main]
 
 jobs:
-  check:
-    name: Check (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - name: Clone libenclaveapp
-        run: git clone --depth 1 https://github.com/jgowdy/libenclaveapp.git ../libenclaveapp
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Format check
-        run: cargo fmt --all -- --check
-      - name: Clippy
-        run: cargo clippy --workspace --features awsenc-secure-storage/mock --tests -- -D warnings
-      - name: Test
-        run: cargo test --workspace --features awsenc-secure-storage/mock
+  ci:
+    uses: jgowdy/libenclaveapp/.github/workflows/reusable-ci.yml@main
+    with:
+      platforms: '["macos-latest", "ubuntu-latest", "windows-latest"]'
+      cargo_args: "--features awsenc-secure-storage/mock"
