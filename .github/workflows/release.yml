@@ -220,7 +220,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: jgowdy/scoop-awsenc
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          token: ${{ secrets.SCOOP_BUCKET_TOKEN }}
           path: scoop-awsenc
 
       - name: Update manifest
