@@ -4,7 +4,7 @@
 
 AWS credentials are routinely exposed through ambient environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`) or written to plaintext files (`~/.aws/credentials`). Tools like `aws-okta-processor` obtain temporary credentials from Okta but still hand them off as plaintext -- either exported into the shell environment or written to disk cache files. Any process running in the user's session can read these credentials, and any disk compromise exposes them.
 
-This is the same class of "ambient security" problem that `sshenc` solves for SSH keys and `sso-jwt` solves for SSO JWTs: secrets sitting around in the open, available to any malware, rogue dependency, or accidental log statement.
+This is the same class of "ambient security" problem that `sshenc` solves for SSH keys: secrets sitting around in the open, available to any malware, rogue dependency, or accidental log statement.
 
 ## Goals
 
@@ -12,7 +12,7 @@ This is the same class of "ambient security" problem that `sshenc` solves for SS
 2. **Eliminate ambient environment variables.** Credentials are never exported into the shell. The AWS CLI fetches them on demand via `credential_process`.
 3. **Replace aws-okta-processor.** Provide the same Okta SAML -> AWS STS authentication flow as a single static binary with no Python runtime dependency.
 4. **Cross-platform parity.** Support macOS, Windows (PowerShell, Git Bash), WSL, and Linux with the same binary and consistent behavior.
-5. **Architectural consistency with sshenc and sso-jwt.** Share the same platform abstraction patterns, workspace layout, build conventions, and security posture.
+5. **Architectural consistency with sshenc.** Share the same platform abstraction patterns, workspace layout, build conventions, and security posture.
 
 ## Non-Goals
 
@@ -64,7 +64,7 @@ The AWS CLI never sees a file or environment variable -- it calls `awsenc serve`
 
 ## Workspace Structure
 
-Following the same patterns as `sshenc` (11-crate workspace) and `sso-jwt` (4-crate workspace):
+Following the same patterns as `sshenc` (11-crate workspace):
 
 ```
 awsenc/
@@ -123,13 +123,13 @@ awsenc/
 
 ### Crate Responsibilities
 
-| Crate | Role | Parallel in sshenc / sso-jwt |
-|-------|------|------------------------------|
-| `awsenc-core` | Config, cache, Okta auth, STS, credential types | `sshenc-core`, `sso-jwt-lib` |
-| `awsenc-secure-storage` | `SecureStorage` trait + platform impls | `sshenc-se`, `sso-jwt-lib/secure_storage/` |
+| Crate | Role | Parallel in sshenc |
+|-------|------|-------------------|
+| `awsenc-core` | Config, cache, Okta auth, STS, credential types | `sshenc-core` |
+| `awsenc-secure-storage` | `SecureStorage` trait + platform impls | `sshenc-se` |
 | `awsenc-ffi-apple` | Swift bridge for Secure Enclave | `sshenc-ffi-apple` |
-| `awsenc-cli` | CLI binary, credential_process handler | `sshenc-cli`, `sso-jwt` CLI |
-| `awsenc-tpm-bridge` | WSL-to-Windows TPM bridge | `sso-jwt-tpm-bridge` |
+| `awsenc-cli` | CLI binary, credential_process handler | `sshenc-cli` |
+| `awsenc-tpm-bridge` | WSL-to-Windows TPM bridge | — |
 
 ---
 
@@ -146,7 +146,7 @@ awsenc/
 
 ### WSL Bridge Architecture
 
-Identical to the pattern proven in `sso-jwt`:
+WSL bridge architecture:
 
 ```
 WSL Linux                              Windows Host
@@ -160,7 +160,7 @@ WSL Linux                              Windows Host
 
 - Detection: Check `WSL_DISTRO_NAME` env var or `/proc/version` for "microsoft"/"wsl".
 - Bridge path: `/mnt/c/Program Files/awsenc/awsenc-tpm-bridge.exe` or `/mnt/c/ProgramData/awsenc/awsenc-tpm-bridge.exe`.
-- Protocol: Same JSON-RPC as `sso-jwt-tpm-bridge` (`init`, `encrypt`, `decrypt`, `destroy` methods).
+- Protocol: JSON-RPC (`init`, `encrypt`, `decrypt`, `destroy` methods).
 
 ---
 
@@ -272,7 +272,7 @@ Okta sessions are expensive to establish (MFA required). The Okta session token 
 
 ## Credential Cache Format
 
-Following the `sso-jwt` binary cache format pattern:
+Binary cache format:
 
 ```
 Offset  Length  Field
@@ -299,7 +299,7 @@ Profile names are sanitized: alphanumeric, hyphens, underscores only. No path tr
 
 ### Credential Lifecycle
 
-Modeled after `sso-jwt`'s proactive refresh pattern, adapted for AWS STS credential behavior:
+Proactive refresh pattern, adapted for AWS STS credential behavior:
 
 | State | Condition | Action |
 |-------|-----------|--------|
@@ -311,7 +311,7 @@ AWS STS session credentials have a fixed expiration (default 1 hour, configurabl
 
 ### Encryption
 
-Same ECIES pattern as `sso-jwt`:
+ECIES encryption per platform:
 
 - **macOS**: ECIES with cofactor X9.63 SHA-256 AES-GCM via Secure Enclave.
 - **Windows**: ECDH P-256 + AES-GCM via CNG Platform Crypto Provider.
@@ -566,7 +566,7 @@ The separation of `auth` (interactive) and `serve` (non-interactive) is delibera
 
 ### awsenc exec
 
-Run a child process with AWS credentials injected into its environment only. Credentials never appear in the parent shell. This mirrors `sso-jwt exec`:
+Run a child process with AWS credentials injected into its environment only. Credentials never appear in the parent shell:
 
 ```
 awsenc exec --profile my-account -- terraform apply
@@ -597,7 +597,7 @@ awsenc uninstall --profile my-account
 
 ### awsenc shell-init
 
-Prints a shell snippet that detects and warns when AWS credentials are exported as environment variables. Same defense-in-depth pattern as `sso-jwt shell-init`:
+Prints a shell snippet that detects and warns when AWS credentials are exported as environment variables:
 
 ```bash
 # Add to .zshrc / .bashrc:
@@ -708,7 +708,7 @@ No environment variable for passwords. This is intentional and a departure from 
 
 ### Memory Safety
 
-- `Zeroizing<Vec<u8>>` wrappers for all credential buffers (same as `sso-jwt`).
+- `Zeroizing<Vec<u8>>` wrappers for all credential buffers.
 - `unsafe` code denied at workspace level except FFI callsites.
 - No `unwrap()` or `panic!()` in non-test code.
 
@@ -780,7 +780,7 @@ clean:      cargo clean
 | Homebrew | Tap formula (`brew install jgowdy/tap/awsenc`) |
 | Scoop | Bucket manifest (Windows) |
 
-The Windows MSI installs both `awsenc.exe` and `awsenc-tpm-bridge.exe`, and optionally installs the Linux binary into detected WSL distros (same pattern as `sso-jwt`).
+The Windows MSI installs both `awsenc.exe` and `awsenc-tpm-bridge.exe`, and optionally installs the Linux binary into detected WSL distros.
 
 ---
 
@@ -826,7 +826,7 @@ Scans `~/.aws/config` and `~/.aws/credentials` for `credential_process=aws-okta-
 
 ### Export Detection
 
-Same defense-in-depth pattern as `sso-jwt`. The shell hook warns when users attempt to export AWS credentials into their environment:
+The shell hook warns when users attempt to export AWS credentials into their environment:
 
 **Detected patterns:**
 - `export AWS_ACCESS_KEY_ID=...`
@@ -997,7 +997,7 @@ Options:
 
 ## Testing Strategy
 
-Following the testing patterns from `sshenc` (159 tests, 6 categories) and `sso-jwt` (155 tests):
+Following the testing patterns from `sshenc` (159 tests, 6 categories):
 
 ### Test Categories
 
@@ -1010,7 +1010,7 @@ Following the testing patterns from `sshenc` (159 tests, 6 categories) and `sso-
 
 ### CI
 
-GitHub Actions with matrix builds across macOS, Windows, and Linux. Hardware tests skipped in CI (same approach as `sshenc` and `sso-jwt`).
+GitHub Actions with matrix builds across macOS, Windows, and Linux. Hardware tests skipped in CI (same approach as `sshenc`).
 
 ---
 
@@ -1063,7 +1063,7 @@ GitHub Actions with matrix builds across macOS, Windows, and Linux. Hardware tes
 - Prototype against GoDaddy's Okta to determine the right auth endpoint:
   - Option A: Okta OAuth2 `/authorize` with PKCE -- get authorization code via redirect, exchange for session.
   - Option B: Okta sign-in widget URL with redirect -- capture session token from callback.
-- Open browser with `open` crate (same as `sso-jwt`), fall back to `$BROWSER`.
+- Open browser with `open` crate, fall back to `$BROWSER`.
 - CLI blocks with spinner/message, timeout after 120s.
 - On callback: extract session token, shut down server, continue with SAML assertion fetch.
 - Add `--factor webauthn` / `--factor browser` option to `awsenc auth`.

@@ -4,7 +4,7 @@ Hardware-backed AWS credential manager. Encrypts AWS session credentials at rest
 
 Replaces [aws-okta-processor](https://github.com/godaddy/aws-okta-processor) with a single static binary. No Python runtime required.
 
-Part of the same family as [sshenc](https://github.com/jgowdy/sshenc) (SSH keys) and [sso-jwt](https://github.com/gdcorp-im/sso-jwt) (SSO tokens).
+Part of the same family as [sshenc](https://github.com/jgowdy/sshenc) (SSH keys).
 
 ## Install
 
