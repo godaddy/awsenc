@@ -56,5 +56,27 @@
             <ComponentGroupRef Id="ProductComponents" />
         </Feature>
 
+        <!-- Custom actions: run awsenc install after install, awsenc uninstall before uninstall -->
+        <CustomAction
+            Id="AwsencInstall"
+            FileRef="awsenc.exe"
+            ExeCommand="install"
+            Execute="deferred"
+            Impersonate="yes"
+            Return="ignore" />
+
+        <CustomAction
+            Id="AwsencUninstall"
+            FileRef="awsenc.exe"
+            ExeCommand="uninstall"
+            Execute="deferred"
+            Impersonate="yes"
+            Return="ignore" />
+
+        <InstallExecuteSequence>
+            <Custom Action="AwsencInstall" After="InstallFiles" Condition="NOT REMOVE" />
+            <Custom Action="AwsencUninstall" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
+        </InstallExecuteSequence>
+
     </Package>
 </Wix>
