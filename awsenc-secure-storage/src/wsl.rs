@@ -74,7 +74,7 @@ pub struct WslBridgeStorage {
 impl WslBridgeStorage {
     /// Locate the bridge executable and create a new storage instance.
     pub fn new(biometric: bool) -> Result<Self> {
-        let bridge_path = find_bridge_executable().ok_or_else(|| StorageError::NotAvailable)?;
+        let bridge_path = find_bridge_executable().ok_or(StorageError::NotAvailable)?;
 
         debug!("WSL TPM bridge found at {}", bridge_path.display());
 

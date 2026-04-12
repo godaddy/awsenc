@@ -99,7 +99,7 @@ fn key_file_path() -> Result<PathBuf> {
 }
 
 /// Ensure `~/.config/awsenc/` exists with mode 0o700.
-fn ensure_config_dir(path: &PathBuf) -> Result<()> {
+fn ensure_config_dir(path: &std::path::Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.exists() {
             fs::create_dir_all(parent).map_err(|e| {
