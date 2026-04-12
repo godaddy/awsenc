@@ -4,15 +4,17 @@ class Awsenc < Formula
   version "0.1.0"
   license "MIT"
 
-  on_macos do
-    if Hardware::CPU.arm?
-      url "https://github.com/jgowdy/awsenc/releases/download/v0.1.0/awsenc-aarch64-apple-darwin.tar.gz"
-      sha256 "PLACEHOLDER_ARM64_SHA256"
-    else
-      url "https://github.com/jgowdy/awsenc/releases/download/v0.1.0/awsenc-x86_64-apple-darwin.tar.gz"
-      sha256 "PLACEHOLDER_X86_64_SHA256"
-    end
+  on_arm do
+    url "https://github.com/jgowdy/awsenc/releases/download/v0.1.0/awsenc-aarch64-apple-darwin.tar.gz"
+    sha256 "PLACEHOLDER_ARM64_SHA256"
   end
+
+  on_intel do
+    url "https://github.com/jgowdy/awsenc/releases/download/v0.1.0/awsenc-x86_64-apple-darwin.tar.gz"
+    sha256 "PLACEHOLDER_X86_64_SHA256"
+  end
+
+  depends_on :macos
 
   def install
     bin.install "awsenc"
