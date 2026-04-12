@@ -16,6 +16,7 @@ pub struct OktaSession {
 }
 
 /// Okta authentication API client.
+#[derive(Debug)]
 pub struct OktaClient {
     client: reqwest::Client,
     base_url: String,
@@ -454,6 +455,8 @@ fn extract_saml_assertion(html: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+
     use super::*;
 
     #[test]

@@ -13,6 +13,7 @@ use crate::usage;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 /// Install a profile: create config file and add managed block to ~/.aws/config.
+#[allow(clippy::print_stderr)]
 pub fn run_install(args: &InstallArgs) -> Result<()> {
     let profile_name = match args.resolved_profile() {
         Some(p) => p.to_owned(),
@@ -78,6 +79,7 @@ pub fn run_install(args: &InstallArgs) -> Result<()> {
 }
 
 /// Uninstall a profile: remove managed block from ~/.aws/config and delete config/cache.
+#[allow(clippy::print_stderr)]
 pub fn run_uninstall(args: &UninstallArgs) -> Result<()> {
     let profile_name = args
         .profile
@@ -101,13 +103,14 @@ pub fn run_uninstall(args: &UninstallArgs) -> Result<()> {
     }
 
     // Delete cache
-    let _ = cache::delete_cache(profile_name);
+    drop(cache::delete_cache(profile_name));
     eprintln!("Uninstalled profile '{profile_name}'");
 
     Ok(())
 }
 
 /// Migrate from aws-okta-processor configuration.
+#[allow(clippy::print_stderr)]
 pub fn run_migrate(args: &MigrateArgs) -> Result<()> {
     let aws_config_path = aws_config_path()?;
     let aws_creds_path = aws_credentials_path()?;

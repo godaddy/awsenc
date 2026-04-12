@@ -24,6 +24,14 @@ pub struct LinuxKeyringStorage {
     cipher: Aes256Gcm,
 }
 
+impl std::fmt::Debug for LinuxKeyringStorage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LinuxKeyringStorage")
+            .field("cipher", &"<Aes256Gcm>")
+            .finish()
+    }
+}
+
 impl LinuxKeyringStorage {
     /// Create a new Linux keyring storage, loading or generating the AES key.
     ///
@@ -46,7 +54,7 @@ impl LinuxKeyringStorage {
 
 impl SecureStorage for LinuxKeyringStorage {
     fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>> {
-        let mut nonce_bytes = [0u8; NONCE_SIZE];
+        let mut nonce_bytes = [0_u8; NONCE_SIZE];
         rand::thread_rng().fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
 
@@ -141,14 +149,14 @@ fn load_or_generate_key() -> Result<[u8; KEY_SIZE]> {
             )));
         }
 
-        let mut key = [0u8; KEY_SIZE];
+        let mut key = [0_u8; KEY_SIZE];
         key.copy_from_slice(&data);
         debug!("loaded existing AES key from {}", path.display());
         Ok(key)
     } else {
         ensure_config_dir(&path)?;
 
-        let mut key = [0u8; KEY_SIZE];
+        let mut key = [0_u8; KEY_SIZE];
         rand::thread_rng().fill_bytes(&mut key);
 
         fs::write(&path, key).map_err(|e| {
@@ -173,12 +181,14 @@ fn load_or_generate_key() -> Result<[u8; KEY_SIZE]> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
 
     fn create_test_storage(dir: &std::path::Path) -> LinuxKeyringStorage {
         // Override the key file location for testing by creating the key directly.
         let key_path = dir.join("storage.key");
-        let mut key = [0u8; KEY_SIZE];
+        let mut key = [0_u8; KEY_SIZE];
         rand::thread_rng().fill_bytes(&mut key);
         fs::write(&key_path, key).unwrap();
 
@@ -213,7 +223,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let storage = create_test_storage(dir.path());
 
-        let result = storage.decrypt(&[0u8; 5]);
+        let result = storage.decrypt(&[0_u8; 5]);
         assert!(result.is_err());
     }
 

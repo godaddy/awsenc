@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 use std::fs;
 
 use awsenc_core::cache::{CacheFile, CacheHeader, FLAG_HAS_OKTA_SESSION, FORMAT_VERSION, MAGIC};
@@ -98,7 +100,7 @@ fn cache_header_read_without_full_file() {
     assert!(data.len() >= 22);
 
     let header_bytes = &data[..22];
-    let mut magic = [0u8; 4];
+    let mut magic = [0_u8; 4];
     magic.copy_from_slice(&header_bytes[0..4]);
     assert_eq!(magic, MAGIC);
 

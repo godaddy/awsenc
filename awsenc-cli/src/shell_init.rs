@@ -3,6 +3,7 @@ use crate::cli::ShellInitArgs;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 /// Print the shell integration script to stdout.
+#[allow(clippy::print_stdout)]
 pub fn run_shell_init(args: &ShellInitArgs) -> Result<()> {
     let shell = detect_shell(args.shell.as_deref())?;
 
@@ -153,6 +154,7 @@ function awsenc-use {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

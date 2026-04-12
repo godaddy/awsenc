@@ -84,6 +84,8 @@ pub fn create_platform_storage(biometric: bool) -> Result<Box<dyn SecureStorage>
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
 
     #[test]

@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 

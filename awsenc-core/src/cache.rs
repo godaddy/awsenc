@@ -65,7 +65,7 @@ impl CacheFile {
             buf.extend_from_slice(&okta_len.to_be_bytes());
             buf.extend_from_slice(okta);
         } else {
-            buf.extend_from_slice(&0u32.to_be_bytes());
+            buf.extend_from_slice(&0_u32.to_be_bytes());
         }
 
         buf
@@ -77,7 +77,7 @@ impl CacheFile {
             return Err(Error::CacheFormat("data too short for cache header".into()));
         }
 
-        let mut magic = [0u8; 4];
+        let mut magic = [0_u8; 4];
         magic.copy_from_slice(&data[0..4]);
         if magic != MAGIC {
             return Err(Error::CacheFormat(format!(
@@ -217,7 +217,7 @@ pub fn read_cache_header(profile: &str) -> Result<Option<CacheHeader>> {
         return Err(Error::CacheFormat("cache file too short for header".into()));
     }
 
-    let mut magic = [0u8; 4];
+    let mut magic = [0_u8; 4];
     magic.copy_from_slice(&data[0..4]);
     if magic != MAGIC {
         return Err(Error::CacheFormat("invalid magic bytes".into()));
@@ -281,6 +281,8 @@ pub fn sanitize_profile_name(name: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
 
     #[test]
@@ -376,7 +378,7 @@ mod tests {
     #[test]
     fn cache_decode_bad_version() {
         let mut data = vec![0x41, 0x57, 0x53, 0x45, 0xFF, 0x00];
-        data.extend_from_slice(&[0u8; 20]);
+        data.extend_from_slice(&[0_u8; 20]);
         assert!(CacheFile::decode(&data).is_err());
     }
 

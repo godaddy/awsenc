@@ -78,6 +78,7 @@ pub fn get_mru_profiles(data: &UsageData, limit: usize) -> Vec<String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

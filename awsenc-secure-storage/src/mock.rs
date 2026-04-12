@@ -14,10 +14,18 @@ pub struct MockStorage {
     cipher: Aes256Gcm,
 }
 
+impl std::fmt::Debug for MockStorage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MockStorage")
+            .field("cipher", &"<Aes256Gcm>")
+            .finish()
+    }
+}
+
 impl MockStorage {
     /// Create a new mock storage with a randomly generated AES-256 key.
     pub fn new() -> Self {
-        let mut key_bytes = [0u8; 32];
+        let mut key_bytes = [0_u8; 32];
         rand::thread_rng().fill_bytes(&mut key_bytes);
         let cipher = Aes256Gcm::new_from_slice(&key_bytes)
             .expect("32-byte key is always valid for AES-256-GCM");
@@ -33,7 +41,7 @@ impl Default for MockStorage {
 
 impl SecureStorage for MockStorage {
     fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>> {
-        let mut nonce_bytes = [0u8; NONCE_SIZE];
+        let mut nonce_bytes = [0_u8; NONCE_SIZE];
         rand::thread_rng().fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
 
@@ -75,6 +83,8 @@ impl SecureStorage for MockStorage {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
 
     #[test]
@@ -111,7 +121,7 @@ mod tests {
     #[test]
     fn decrypt_short_input_fails() {
         let storage = MockStorage::new();
-        let result = storage.decrypt(&[0u8; 5]);
+        let result = storage.decrypt(&[0_u8; 5]);
         assert!(result.is_err());
     }
 

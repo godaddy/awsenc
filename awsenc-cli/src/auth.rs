@@ -19,6 +19,7 @@ use crate::usage;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 /// Run the interactive authentication flow.
+#[allow(clippy::print_stderr)]
 pub async fn run_auth(profile: &str, args: &AuthArgs, storage: &dyn SecureStorage) -> Result<()> {
     let global = config::load_global_config()?;
     let Ok(profile_config) = config::load_profile_config(profile) else {
@@ -93,6 +94,7 @@ fn read_password(args: &AuthArgs, okta_user: &str) -> Result<Zeroizing<String>> 
     Ok(Zeroizing::new(p))
 }
 
+#[allow(clippy::print_stderr)]
 async fn obtain_credentials(
     okta: &OktaClient,
     session_token: &Zeroizing<String>,
@@ -164,10 +166,11 @@ fn encrypt_and_cache(
 }
 
 /// Handle MFA challenges interactively.
+#[allow(clippy::print_stderr)]
 async fn handle_mfa(
     okta: &OktaClient,
     state_token: &Zeroizing<String>,
-    factors: &[awsenc_core::mfa::MfaChallenge],
+    factors: &[mfa::MfaChallenge],
     preferred_factor: &str,
 ) -> Result<Zeroizing<String>> {
     let preferred = preferred_factor.parse::<MfaFactor>().ok();

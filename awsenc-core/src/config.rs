@@ -277,6 +277,8 @@ pub fn resolve_alias(name: &str, global: &GlobalConfig) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
 
     #[test]

@@ -15,6 +15,7 @@ pub struct SamlRole {
 }
 
 /// AWS STS client for `AssumeRoleWithSAML`.
+#[derive(Debug)]
 pub struct StsClient {
     client: reqwest::Client,
     endpoint_url: String,
@@ -184,6 +185,8 @@ pub fn parse_saml_roles(saml_assertion: &str) -> Result<Vec<SamlRole>> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
 
     #[test]

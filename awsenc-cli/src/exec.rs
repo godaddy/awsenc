@@ -15,6 +15,7 @@ use crate::usage;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 /// Run a child process with AWS credentials injected into its environment.
+#[allow(clippy::exit, clippy::print_stderr)]
 pub async fn run_exec(args: &ExecArgs, storage: &dyn SecureStorage) -> Result<()> {
     if args.command.is_empty() {
         return Err(
@@ -25,7 +26,8 @@ pub async fn run_exec(args: &ExecArgs, storage: &dyn SecureStorage) -> Result<()
     let profile_name = resolve_exec_profile(args)?;
     let profile = profile_name.as_str();
 
-    let creds = if let Some(c) = get_cached_credentials(profile, storage)? {
+    let cached = get_cached_credentials(profile, storage)?;
+    let creds = if let Some(c) = cached {
         c
     } else {
         eprintln!("No cached credentials for '{profile}', authenticating...");

@@ -186,6 +186,7 @@ fn is_secure_enclave_available() -> bool {
 /// The private key lives in the Secure Enclave and never leaves it.
 /// Encryption uses the public key (no hardware call required).
 /// Decryption requires the Secure Enclave to unwrap data with the private key.
+#[derive(Debug)]
 pub struct MacosSecureEnclaveStorage {
     private_key: SecKey,
     public_key: SecKey,
@@ -440,6 +441,8 @@ fn create_access_control(biometric: bool) -> Result<CFTypeRefSys> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::print_stdout)]
+
     use super::*;
 
     #[test]

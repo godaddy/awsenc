@@ -104,13 +104,15 @@ pub fn delete_profile(name: &str) -> Result<()> {
     }
 
     // Delete cache file (ignore errors if it doesn't exist)
-    let _ = cache::delete_cache(name);
+    drop(cache::delete_cache(name));
 
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
     use crate::config::{ProfileConfig, ProfileOktaConfig};
 
@@ -160,7 +162,7 @@ mod tests {
         };
 
         // Save
-        crate::config::save_profile_config(name, &config).unwrap();
+        config::save_profile_config(name, &config).unwrap();
         assert!(profile_exists(name));
 
         // List should include it

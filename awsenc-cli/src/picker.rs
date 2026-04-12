@@ -116,6 +116,7 @@ pub fn pick_profile(
     }
 }
 
+#[allow(clippy::print_stderr)]
 fn render_list(
     filtered: &[(usize, &ProfileInfo)],
     filter: &str,

@@ -18,6 +18,7 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 ///
 /// Outputs JSON to stdout. Never prompts for input. Never prints anything to
 /// stdout except the credential JSON.
+#[allow(clippy::print_stderr)]
 pub async fn run_serve(args: &ServeArgs, storage: &dyn SecureStorage) -> Result<()> {
     let profile = resolve_serve_profile(args)?;
 
@@ -58,7 +59,8 @@ pub async fn run_serve(args: &ServeArgs, storage: &dyn SecureStorage) -> Result<
             usage::record_usage(&profile);
         }
         CredentialState::Expired => {
-            if let Ok(new_creds) = try_transparent_reauth(&profile, storage, &cache).await {
+            let reauth_result = try_transparent_reauth(&profile, storage, &cache).await;
+            if let Ok(new_creds) = reauth_result {
                 output_credentials(&new_creds);
                 usage::record_usage(&profile);
             } else {
@@ -110,6 +112,7 @@ fn decrypt_aws_credentials(
     Ok(creds)
 }
 
+#[allow(clippy::print_stdout)]
 fn output_credentials(creds: &AwsCredentials) {
     let output = CredentialProcessOutput::from_credentials(creds);
     // This is the ONLY thing that goes to stdout

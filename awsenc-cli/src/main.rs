@@ -21,6 +21,7 @@ mod usage;
 use cli::{Cli, Commands};
 
 #[tokio::main]
+#[allow(clippy::print_stderr)]
 async fn main() {
     let filter = tracing_subscriber::EnvFilter::try_from_env("AWSENC_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
@@ -38,6 +39,7 @@ async fn main() {
     }
 }
 
+#[allow(clippy::print_stderr, clippy::print_stdout)]
 async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Commands::Auth(args) => {
@@ -162,6 +164,7 @@ fn resolve_biometric_from_exec(args: &cli::ExecArgs) -> bool {
     resolve_biometric_for_profile(&profile, false)
 }
 
+#[allow(clippy::print_stderr, clippy::print_stdout)]
 fn run_list(args: &cli::ListArgs) -> Result<(), Box<dyn std::error::Error>> {
     let profiles = profile::list_profiles()?;
     let usage_data = usage::load_usage();
@@ -187,7 +190,7 @@ fn run_list(args: &cli::ListArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mru = usage::get_mru_profiles(&usage_data, if args.all { 0 } else { 10 });
     let limit = if args.all { usize::MAX } else { 10 };
 
-    let mut display: Vec<&awsenc_core::profile::ProfileInfo> = Vec::new();
+    let mut display: Vec<&profile::ProfileInfo> = Vec::new();
 
     for mru_name in &mru {
         if let Some(info) = profiles.iter().find(|p| &p.name == mru_name) {
@@ -195,7 +198,7 @@ fn run_list(args: &cli::ListArgs) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let remaining: Vec<&awsenc_core::profile::ProfileInfo> =
+    let remaining: Vec<&profile::ProfileInfo> =
         profiles.iter().filter(|p| !mru.contains(&p.name)).collect();
     display.extend(remaining);
 
@@ -251,6 +254,7 @@ fn format_expires(expiration: Option<chrono::DateTime<chrono::Utc>>) -> String {
     }
 }
 
+#[allow(clippy::print_stderr)]
 fn run_clear(args: &cli::ClearArgs) -> Result<(), Box<dyn std::error::Error>> {
     if args.all {
         if !args.force {
@@ -298,6 +302,7 @@ fn run_clear(args: &cli::ClearArgs) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[allow(clippy::print_stderr)]
 fn run_config() -> Result<(), Box<dyn std::error::Error>> {
     let config_dir = config::config_dir()?;
     let profiles_dir = config::profiles_dir()?;

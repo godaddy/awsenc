@@ -50,10 +50,10 @@ pub struct MfaChallenge {
 ///
 /// If `preferred` is provided, returns the first challenge that matches.
 /// Otherwise returns the first available challenge.
-pub fn select_factor<'a>(
-    factors: &'a [MfaChallenge],
+pub fn select_factor<'factors>(
+    factors: &'factors [MfaChallenge],
     preferred: Option<&MfaFactor>,
-) -> Result<&'a MfaChallenge> {
+) -> Result<&'factors MfaChallenge> {
     if factors.is_empty() {
         return Err(Error::Mfa("no MFA factors available".into()));
     }
@@ -91,6 +91,8 @@ pub fn factor_matches(challenge: &MfaChallenge, factor: &MfaFactor) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
 
     #[test]

@@ -66,6 +66,7 @@ pub fn is_wsl() -> bool {
 ///
 /// The bridge (`awsenc-tpm-bridge.exe`) runs on the Windows side and exposes
 /// TPM encrypt/decrypt operations over a JSON-RPC protocol on stdin/stdout.
+#[derive(Debug)]
 pub struct WslBridgeStorage {
     bridge_path: PathBuf,
     biometric: bool,
@@ -215,6 +216,8 @@ fn find_bridge_executable() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
 
     #[test]

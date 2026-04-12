@@ -123,9 +123,9 @@ fn main() {
                 let resp = Response::Error {
                     error: format!("read error: {e}"),
                 };
-                let _ = serde_json::to_writer(&mut stdout, &resp);
-                let _ = stdout.write_all(b"\n");
-                let _ = stdout.flush();
+                drop(serde_json::to_writer(&mut stdout, &resp));
+                drop(stdout.write_all(b"\n"));
+                drop(stdout.flush());
                 break;
             }
         };
@@ -154,6 +154,7 @@ fn main() {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
 
