@@ -27,6 +27,9 @@
             <Component Id="awsenc_tpm_bridge_exe">
                 <File Id="awsenc_tpm_bridge.exe" Source="dist\awsenc-tpm-bridge.exe" KeyPath="yes" />
             </Component>
+            <Component Id="linux_binary">
+                <File Id="awsenc_linux" Source="dist\awsenc-linux" KeyPath="yes" />
+            </Component>
 
             <!-- Add to user PATH -->
             <Component Id="PathEntry">
