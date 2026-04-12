@@ -23,6 +23,11 @@ jobs:
             os: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: jgowdy/libenclaveapp
+          path: ../libenclaveapp
+          token: ${{ secrets.LIBENCLAVEAPP_TOKEN }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}

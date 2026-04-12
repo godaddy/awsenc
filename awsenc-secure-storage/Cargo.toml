@@ -21,17 +21,16 @@ serde_json = "1"
 dirs = "5"
 aes-gcm = { version = "0.10", optional = true }
 rand = { version = "0.8", optional = true }
+enclaveapp-core = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 aes-gcm = { version = "0.10" }
 rand = { version = "0.8" }
-keyring = { version = "2", optional = true }
+enclaveapp-bridge = { workspace = true }
+enclaveapp-wsl = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-security-framework = "2"
-security-framework-sys = "2"
-core-foundation = "0.9"
-core-foundation-sys = "0.8"
+enclaveapp-apple = { workspace = true, features = ["encryption"] }
 
 [dev-dependencies]
 tempfile = "3"

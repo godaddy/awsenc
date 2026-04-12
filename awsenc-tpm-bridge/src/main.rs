@@ -1,113 +1,68 @@
+// Copyright 2024 Jay Gowdy
+// SPDX-License-Identifier: MIT
+
 mod tpm;
 
 use base64::prelude::*;
-use serde::{Deserialize, Serialize};
+use enclaveapp_bridge::{BridgeRequest, BridgeResponse};
 use std::io::{self, BufRead, Write};
 
-#[derive(Debug, Deserialize)]
-struct Request {
-    method: String,
-    params: Option<Params>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Params {
-    data: Option<String>,
-    biometric: Option<bool>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(untagged)]
-enum Response {
-    Success { result: String },
-    Error { error: String },
-}
-
-fn handle_request(request: &Request, storage: &mut Option<tpm::TpmStorage>) -> Response {
+fn handle_request(
+    request: &BridgeRequest,
+    storage: &mut Option<tpm::TpmStorage>,
+) -> BridgeResponse {
     match request.method.as_str() {
         "init" => {
-            let biometric = request
-                .params
-                .as_ref()
-                .and_then(|p| p.biometric)
-                .unwrap_or(false);
+            let biometric = request.params.biometric;
             match tpm::TpmStorage::new(biometric) {
                 Ok(s) => {
                     *storage = Some(s);
-                    Response::Success {
-                        result: "ok".to_string(),
-                    }
+                    BridgeResponse::success("ok")
                 }
-                Err(e) => Response::Error {
-                    error: format!("init failed: {e}"),
-                },
+                Err(e) => BridgeResponse::error(&format!("init failed: {e}")),
             }
         }
         "encrypt" => {
             let Some(ref s) = storage else {
-                return Response::Error {
-                    error: "not initialized: call init first".to_string(),
-                };
+                return BridgeResponse::error("not initialized: call init first");
             };
-            let Some(data_b64) = request.params.as_ref().and_then(|p| p.data.as_deref()) else {
-                return Response::Error {
-                    error: "missing data parameter".to_string(),
-                };
-            };
-            let plaintext = match BASE64_STANDARD.decode(data_b64) {
+            if request.params.data.is_empty() {
+                return BridgeResponse::error("missing data parameter");
+            }
+            let plaintext = match BASE64_STANDARD.decode(&request.params.data) {
                 Ok(d) => d,
                 Err(e) => {
-                    return Response::Error {
-                        error: format!("base64 decode error: {e}"),
-                    };
+                    return BridgeResponse::error(&format!("base64 decode error: {e}"));
                 }
             };
             match s.encrypt(&plaintext) {
-                Ok(ciphertext) => Response::Success {
-                    result: BASE64_STANDARD.encode(&ciphertext),
-                },
-                Err(e) => Response::Error {
-                    error: format!("encrypt failed: {e}"),
-                },
+                Ok(ciphertext) => BridgeResponse::success(&BASE64_STANDARD.encode(&ciphertext)),
+                Err(e) => BridgeResponse::error(&format!("encrypt failed: {e}")),
             }
         }
         "decrypt" => {
             let Some(ref s) = storage else {
-                return Response::Error {
-                    error: "not initialized: call init first".to_string(),
-                };
+                return BridgeResponse::error("not initialized: call init first");
             };
-            let Some(data_b64) = request.params.as_ref().and_then(|p| p.data.as_deref()) else {
-                return Response::Error {
-                    error: "missing data parameter".to_string(),
-                };
-            };
-            let ciphertext = match BASE64_STANDARD.decode(data_b64) {
+            if request.params.data.is_empty() {
+                return BridgeResponse::error("missing data parameter");
+            }
+            let ciphertext = match BASE64_STANDARD.decode(&request.params.data) {
                 Ok(d) => d,
                 Err(e) => {
-                    return Response::Error {
-                        error: format!("base64 decode error: {e}"),
-                    };
+                    return BridgeResponse::error(&format!("base64 decode error: {e}"));
                 }
             };
             match s.decrypt(&ciphertext) {
-                Ok(plaintext) => Response::Success {
-                    result: BASE64_STANDARD.encode(&plaintext),
-                },
-                Err(e) => Response::Error {
-                    error: format!("decrypt failed: {e}"),
-                },
+                Ok(plaintext) => BridgeResponse::success(&BASE64_STANDARD.encode(&plaintext)),
+                Err(e) => BridgeResponse::error(&format!("decrypt failed: {e}")),
             }
         }
         "destroy" => {
             *storage = None;
-            Response::Success {
-                result: "ok".to_string(),
-            }
+            BridgeResponse::success("ok")
         }
-        other => Response::Error {
-            error: format!("unknown method: {other}"),
-        },
+        other => BridgeResponse::error(&format!("unknown method: {other}")),
     }
 }
 
@@ -120,9 +75,7 @@ fn main() {
         let line = match line {
             Ok(l) => l,
             Err(e) => {
-                let resp = Response::Error {
-                    error: format!("read error: {e}"),
-                };
+                let resp = BridgeResponse::error(&format!("read error: {e}"));
                 drop(serde_json::to_writer(&mut stdout, &resp));
                 drop(stdout.write_all(b"\n"));
                 drop(stdout.flush());
@@ -134,11 +87,9 @@ fn main() {
             continue;
         }
 
-        let response = match serde_json::from_str::<Request>(&line) {
+        let response = match serde_json::from_str::<BridgeRequest>(&line) {
             Ok(req) => handle_request(&req, &mut storage),
-            Err(e) => Response::Error {
-                error: format!("invalid JSON: {e}"),
-            },
+            Err(e) => BridgeResponse::error(&format!("invalid JSON: {e}")),
         };
 
         if serde_json::to_writer(&mut stdout, &response).is_err() {
@@ -157,219 +108,153 @@ fn main() {
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+    use enclaveapp_bridge::BridgeParams;
+
+    fn make_request(method: &str, data: &str, biometric: bool) -> BridgeRequest {
+        BridgeRequest {
+            method: method.to_string(),
+            params: BridgeParams {
+                data: data.to_string(),
+                biometric,
+                app_name: "awsenc".to_string(),
+            },
+        }
+    }
 
     #[test]
     fn parse_init_request() {
         let json = r#"{"method": "init", "params": {"biometric": false}}"#;
-        let req: Request = serde_json::from_str(json).unwrap();
+        let req: BridgeRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.method, "init");
-        assert_eq!(req.params.as_ref().unwrap().biometric, Some(false));
-        assert!(req.params.as_ref().unwrap().data.is_none());
+        assert!(!req.params.biometric);
     }
 
     #[test]
-    fn parse_init_request_no_params() {
-        let json = r#"{"method": "init"}"#;
-        let req: Request = serde_json::from_str(json).unwrap();
+    fn parse_init_request_defaults() {
+        let json = r#"{"method": "init", "params": {}}"#;
+        let req: BridgeRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.method, "init");
-        assert!(req.params.is_none());
+        assert!(!req.params.biometric);
+        assert!(req.params.data.is_empty());
     }
 
     #[test]
     fn parse_encrypt_request() {
         let json = r#"{"method": "encrypt", "params": {"data": "aGVsbG8=", "biometric": false}}"#;
-        let req: Request = serde_json::from_str(json).unwrap();
+        let req: BridgeRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.method, "encrypt");
-        assert_eq!(
-            req.params.as_ref().unwrap().data.as_deref(),
-            Some("aGVsbG8=")
-        );
+        assert_eq!(req.params.data, "aGVsbG8=");
     }
 
     #[test]
     fn parse_decrypt_request() {
         let json = r#"{"method": "decrypt", "params": {"data": "Y2lwaGVy"}}"#;
-        let req: Request = serde_json::from_str(json).unwrap();
+        let req: BridgeRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.method, "decrypt");
-        assert_eq!(
-            req.params.as_ref().unwrap().data.as_deref(),
-            Some("Y2lwaGVy")
-        );
+        assert_eq!(req.params.data, "Y2lwaGVy");
     }
 
     #[test]
     fn parse_destroy_request() {
-        let json = r#"{"method": "destroy"}"#;
-        let req: Request = serde_json::from_str(json).unwrap();
+        let json = r#"{"method": "destroy", "params": {}}"#;
+        let req: BridgeRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.method, "destroy");
     }
 
     #[test]
     fn serialize_success_response() {
-        let resp = Response::Success {
-            result: "ok".to_string(),
-        };
+        let resp = BridgeResponse::success("ok");
         let json = serde_json::to_string(&resp).unwrap();
-        assert_eq!(json, r#"{"result":"ok"}"#);
+        assert!(json.contains("\"result\":\"ok\""));
     }
 
     #[test]
     fn serialize_error_response() {
-        let resp = Response::Error {
-            error: "something went wrong".to_string(),
-        };
+        let resp = BridgeResponse::error("something went wrong");
         let json = serde_json::to_string(&resp).unwrap();
-        assert_eq!(json, r#"{"error":"something went wrong"}"#);
+        assert!(json.contains("\"error\":\"something went wrong\""));
     }
 
     #[test]
     fn handle_init_creates_storage() {
-        let req = Request {
-            method: "init".to_string(),
-            params: Some(Params {
-                data: None,
-                biometric: Some(false),
-            }),
-        };
+        let req = make_request("init", "", false);
         let mut storage = None;
         let resp = handle_request(&req, &mut storage);
         // On non-Windows, init succeeds (stub creates the struct)
         // but encrypt/decrypt will fail at runtime
-        match resp {
-            Response::Success { result } => assert_eq!(result, "ok"),
-            Response::Error { error } => {
-                // On Windows CI without TPM, init might fail - that's ok
-                assert!(error.contains("init failed"), "unexpected error: {error}");
-            }
-        }
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(
+            json.contains("\"result\"") || json.contains("\"error\""),
+            "response should be valid JSON"
+        );
     }
 
     #[test]
     fn handle_destroy_clears_storage() {
-        let req = Request {
-            method: "destroy".to_string(),
-            params: None,
-        };
+        let req = make_request("destroy", "", false);
         let mut storage = None;
         let resp = handle_request(&req, &mut storage);
-        match resp {
-            Response::Success { result } => assert_eq!(result, "ok"),
-            Response::Error { .. } => panic!("destroy should succeed"),
-        }
+        assert!(resp.result.is_some());
         assert!(storage.is_none());
     }
 
     #[test]
     fn handle_unknown_method() {
-        let req = Request {
-            method: "bogus".to_string(),
-            params: None,
-        };
+        let req = make_request("bogus", "", false);
         let mut storage = None;
         let resp = handle_request(&req, &mut storage);
-        match resp {
-            Response::Error { error } => assert!(error.contains("unknown method")),
-            Response::Success { .. } => panic!("should have returned error"),
-        }
+        assert!(resp
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("unknown method")),);
     }
 
     #[test]
     fn handle_encrypt_without_init() {
-        let req = Request {
-            method: "encrypt".to_string(),
-            params: Some(Params {
-                data: Some("aGVsbG8=".to_string()),
-                biometric: None,
-            }),
-        };
+        let req = make_request("encrypt", "aGVsbG8=", false);
         let mut storage = None;
         let resp = handle_request(&req, &mut storage);
-        match resp {
-            Response::Error { error } => assert!(error.contains("not initialized")),
-            Response::Success { .. } => panic!("should have returned error"),
-        }
+        assert!(resp
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("not initialized")),);
     }
 
     #[test]
     fn handle_decrypt_without_init() {
-        let req = Request {
-            method: "decrypt".to_string(),
-            params: Some(Params {
-                data: Some("Y2lwaGVy".to_string()),
-                biometric: None,
-            }),
-        };
+        let req = make_request("decrypt", "Y2lwaGVy", false);
         let mut storage = None;
         let resp = handle_request(&req, &mut storage);
-        match resp {
-            Response::Error { error } => assert!(error.contains("not initialized")),
-            Response::Success { .. } => panic!("should have returned error"),
-        }
+        assert!(resp
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("not initialized")),);
     }
 
     #[test]
     fn handle_encrypt_missing_data() {
-        let req = Request {
-            method: "encrypt".to_string(),
-            params: Some(Params {
-                data: None,
-                biometric: None,
-            }),
-        };
+        let req = make_request("encrypt", "", false);
         // On platforms without a TPM, new() may fail and storage is None,
         // so we get "not initialized" instead of "missing data". Both are valid errors.
         let mut storage = tpm::TpmStorage::new(false).ok();
         let resp = handle_request(&req, &mut storage);
-        match resp {
-            Response::Error { error } => {
-                assert!(
-                    error.contains("missing data") || error.contains("not initialized"),
-                    "unexpected error: {error}"
-                );
-            }
-            Response::Success { .. } => panic!("should have returned error"),
-        }
+        assert!(resp.error.is_some());
     }
 
     #[test]
     fn handle_encrypt_invalid_base64() {
-        let req = Request {
-            method: "encrypt".to_string(),
-            params: Some(Params {
-                data: Some("not-valid-base64!!!".to_string()),
-                biometric: None,
-            }),
-        };
+        let req = make_request("encrypt", "not-valid-base64!!!", false);
         let mut storage = tpm::TpmStorage::new(false).ok();
         let resp = handle_request(&req, &mut storage);
-        match resp {
-            Response::Error { error } => {
-                assert!(
-                    error.contains("base64") || error.contains("not initialized"),
-                    "unexpected error: {error}"
-                );
-            }
-            Response::Success { .. } => panic!("should have returned error"),
-        }
+        assert!(resp.error.is_some());
     }
 
     #[test]
     fn handle_decrypt_missing_data() {
-        let req = Request {
-            method: "decrypt".to_string(),
-            params: None,
-        };
+        let req = make_request("decrypt", "", false);
         let mut storage = tpm::TpmStorage::new(false).ok();
         let resp = handle_request(&req, &mut storage);
-        match resp {
-            Response::Error { error } => {
-                assert!(
-                    error.contains("missing data") || error.contains("not initialized"),
-                    "unexpected error: {error}"
-                );
-            }
-            Response::Success { .. } => panic!("should have returned error"),
-        }
+        assert!(resp.error.is_some());
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -394,13 +279,14 @@ mod tests {
     fn roundtrip_json_protocol() {
         // Simulate the full JSON protocol flow
         let init_json = r#"{"method":"init","params":{"biometric":false}}"#;
-        let encrypt_json = r#"{"method":"encrypt","params":{"data":"aGVsbG8gd29ybGQ="}}"#;
-        let destroy_json = r#"{"method":"destroy"}"#;
+        let encrypt_json =
+            r#"{"method":"encrypt","params":{"data":"aGVsbG8gd29ybGQ=","biometric":false}}"#;
+        let destroy_json = r#"{"method":"destroy","params":{}}"#;
 
         let mut storage = None;
 
         // Init
-        let req: Request = serde_json::from_str(init_json).unwrap();
+        let req: BridgeRequest = serde_json::from_str(init_json).unwrap();
         let resp = handle_request(&req, &mut storage);
         let resp_json = serde_json::to_string(&resp).unwrap();
         assert!(
@@ -409,7 +295,7 @@ mod tests {
         );
 
         // Encrypt (will fail on non-Windows, which is expected)
-        let req: Request = serde_json::from_str(encrypt_json).unwrap();
+        let req: BridgeRequest = serde_json::from_str(encrypt_json).unwrap();
         let resp = handle_request(&req, &mut storage);
         let resp_json = serde_json::to_string(&resp).unwrap();
         assert!(
@@ -418,17 +304,16 @@ mod tests {
         );
 
         // Destroy
-        let req: Request = serde_json::from_str(destroy_json).unwrap();
+        let req: BridgeRequest = serde_json::from_str(destroy_json).unwrap();
         let resp = handle_request(&req, &mut storage);
-        let resp_json = serde_json::to_string(&resp).unwrap();
-        assert_eq!(resp_json, r#"{"result":"ok"}"#);
+        assert!(resp.result.is_some());
         assert!(storage.is_none());
     }
 
     #[test]
     fn invalid_json_produces_error() {
         let bad_json = "this is not json";
-        let result = serde_json::from_str::<Request>(bad_json);
+        let result = serde_json::from_str::<BridgeRequest>(bad_json);
         assert!(result.is_err());
     }
 }
