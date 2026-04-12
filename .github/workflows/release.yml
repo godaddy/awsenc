@@ -19,6 +19,8 @@ jobs:
             os: macos-latest
           - target: x86_64-apple-darwin
             os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -27,30 +29,52 @@ jobs:
 
       - name: Extract version from tag
         id: version
+        shell: bash
         run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
 
-      - name: Update Cargo.toml version
+      - name: Update Cargo.toml version (unix)
+        if: runner.os != 'Windows'
         run: |
           sed -i '' "s/^version = \".*\"/version = \"${{ steps.version.outputs.version }}\"/" Cargo.toml
+
+      - name: Update Cargo.toml version (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          (Get-Content Cargo.toml) -replace '^version = ".*"', "version = `"${{ steps.version.outputs.version }}`"" | Set-Content Cargo.toml
 
       - name: Build release
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Test
+      - name: Test (macOS)
         if: matrix.target == 'aarch64-apple-darwin'
         run: cargo test --workspace --features awsenc-secure-storage/mock
 
-      - name: Package
+      - name: Test (Windows)
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        run: cargo test --workspace --features awsenc-secure-storage/mock
+
+      - name: Package (unix)
+        if: runner.os != 'Windows'
         run: |
           mkdir -p dist
           cp target/${{ matrix.target }}/release/awsenc dist/
           cd dist && tar czf ../awsenc-${{ matrix.target }}.tar.gz awsenc
 
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item "target/${{ matrix.target }}/release/awsenc.exe" dist/
+          Copy-Item "target/${{ matrix.target }}/release/awsenc-tpm-bridge.exe" dist/
+          Compress-Archive -Path dist/* -DestinationPath "awsenc-${{ matrix.target }}.zip"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: awsenc-${{ matrix.target }}
-          path: awsenc-${{ matrix.target }}.tar.gz
+          path: awsenc-${{ matrix.target }}.*
 
   release:
     name: Create Release
@@ -64,11 +88,12 @@ jobs:
         with:
           path: artifacts
 
-      - name: Collect tarballs
+      - name: Collect release assets
         run: |
           mkdir -p release
           cp artifacts/awsenc-aarch64-apple-darwin/awsenc-aarch64-apple-darwin.tar.gz release/
           cp artifacts/awsenc-x86_64-apple-darwin/awsenc-x86_64-apple-darwin.tar.gz release/
+          cp artifacts/awsenc-x86_64-pc-windows-msvc/awsenc-x86_64-pc-windows-msvc.zip release/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -76,12 +101,12 @@ jobs:
           files: release/*
           generate_release_notes: true
 
-  update-formula:
+  update-homebrew:
     name: Update Homebrew Formula
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - name: Download all artifacts
+      - name: Download macOS artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -168,5 +193,71 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/awsenc.rb
+          git diff --staged --quiet || git commit -m "Update awsenc to v${{ steps.version.outputs.version }}"
+          git push origin main
+
+  update-scoop:
+    name: Update Scoop Manifest
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: Compute SHA256 checksum
+        id: sha
+        run: |
+          WIN_SHA=$(sha256sum artifacts/awsenc-x86_64-pc-windows-msvc/awsenc-x86_64-pc-windows-msvc.zip | cut -d ' ' -f 1)
+          echo "windows=$WIN_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Clone scoop-awsenc bucket repo
+        uses: actions/checkout@v4
+        with:
+          repository: jgowdy/scoop-awsenc
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: scoop-awsenc
+
+      - name: Update manifest
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          WIN_SHA="${{ steps.sha.outputs.windows }}"
+
+          cat > scoop-awsenc/bucket/awsenc.json << MANIFEST
+          {
+              "version": "${VERSION}",
+              "description": "Hardware-backed AWS credential manager (Windows TPM 2.0)",
+              "homepage": "https://github.com/jgowdy/awsenc",
+              "license": "MIT",
+              "architecture": {
+                  "64bit": {
+                      "url": "https://github.com/jgowdy/awsenc/releases/download/v${VERSION}/awsenc-x86_64-pc-windows-msvc.zip",
+                      "hash": "${WIN_SHA}"
+                  }
+              },
+              "bin": [
+                  "awsenc.exe",
+                  "awsenc-tpm-bridge.exe"
+              ],
+              "post_install": "Write-Host 'Run \"awsenc install --profile <name>\" to configure the AWS CLI.'",
+              "notes": [
+                  "Run 'awsenc install --profile <name>' to configure the AWS CLI.",
+                  "Run 'awsenc auth <profile>' to authenticate with Okta.",
+                  "Run 'awsenc shell-init powershell' for shell integration."
+              ]
+          }
+          MANIFEST
+
+      - name: Commit and push manifest update
+        working-directory: scoop-awsenc
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add bucket/awsenc.json
           git diff --staged --quiet || git commit -m "Update awsenc to v${{ steps.version.outputs.version }}"
           git push origin main
