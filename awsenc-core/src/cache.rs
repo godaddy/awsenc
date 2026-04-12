@@ -433,4 +433,78 @@ mod tests {
         assert_eq!(decoded.aws_ciphertext.len(), 100_000);
         assert_eq!(decoded.aws_ciphertext, big);
     }
+
+    #[test]
+    fn cache_decode_corrupted_magic_xwse() {
+        // "XWSE" instead of "AWSE"
+        let mut data = vec![0x58, 0x57, 0x53, 0x45, FORMAT_VERSION, 0x00];
+        data.extend_from_slice(&[0_u8; 16]); // credential_expiration + okta_session_expiration
+        data.extend_from_slice(&0_u32.to_be_bytes()); // aws ciphertext len
+        data.extend_from_slice(&0_u32.to_be_bytes()); // okta ciphertext len
+        assert!(CacheFile::decode(&data).is_err());
+    }
+
+    #[test]
+    fn cache_decode_truncated_header_less_than_header_size() {
+        // Correct magic + version but fewer than HEADER_SIZE + 4 bytes total
+        let data = vec![0x41, 0x57, 0x53, 0x45, FORMAT_VERSION, 0x00, 0x00, 0x00];
+        assert!(
+            CacheFile::decode(&data).is_err(),
+            "data shorter than HEADER_SIZE + 4 should return error"
+        );
+    }
+
+    #[test]
+    fn cache_expiration_timestamp_preserved() {
+        let expiration: u64 = 1_700_123_456;
+        let okta_exp: u64 = 1_700_234_567;
+        let cache = CacheFile {
+            header: CacheHeader {
+                magic: MAGIC,
+                version: FORMAT_VERSION,
+                flags: FLAG_HAS_OKTA_SESSION,
+                credential_expiration: expiration,
+                okta_session_expiration: okta_exp,
+            },
+            aws_ciphertext: vec![0xDE, 0xAD],
+            okta_session_ciphertext: Some(vec![0xBE, 0xEF]),
+        };
+        let encoded = cache.encode();
+        let decoded = CacheFile::decode(&encoded).unwrap();
+        assert_eq!(decoded.header.credential_expiration, expiration);
+        assert_eq!(decoded.header.okta_session_expiration, okta_exp);
+    }
+
+    #[test]
+    fn cache_decode_truncated_aws_ciphertext_data() {
+        // Valid header claiming 100 bytes of AWS ciphertext but only 5 present
+        let mut data = Vec::new();
+        data.extend_from_slice(&MAGIC);
+        data.push(FORMAT_VERSION);
+        data.push(0x00); // flags
+        data.extend_from_slice(&1_700_000_000_u64.to_be_bytes());
+        data.extend_from_slice(&0_u64.to_be_bytes());
+        data.extend_from_slice(&100_u32.to_be_bytes()); // claims 100 bytes
+        data.extend_from_slice(&[0xAA; 5]); // only 5
+        assert!(CacheFile::decode(&data).is_err());
+    }
+
+    #[test]
+    fn cache_decode_empty_ciphertexts_roundtrip() {
+        let cache = CacheFile {
+            header: CacheHeader {
+                magic: MAGIC,
+                version: FORMAT_VERSION,
+                flags: 0,
+                credential_expiration: 0,
+                okta_session_expiration: 0,
+            },
+            aws_ciphertext: vec![],
+            okta_session_ciphertext: None,
+        };
+        let encoded = cache.encode();
+        let decoded = CacheFile::decode(&encoded).unwrap();
+        assert!(decoded.aws_ciphertext.is_empty());
+        assert!(decoded.okta_session_ciphertext.is_none());
+    }
 }

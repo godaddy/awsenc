@@ -187,4 +187,44 @@ mod tests {
         let decrypted = storage.decrypt(&ciphertext).unwrap();
         assert_eq!(decrypted, plaintext);
     }
+
+    #[test]
+    fn encrypt_decrypt_various_sizes() {
+        let storage = MockStorage::new();
+        for size in [0, 1, 100, 10_000] {
+            let plaintext = vec![0xAA_u8; size];
+            let ciphertext = storage.encrypt(&plaintext).unwrap();
+            let decrypted = storage.decrypt(&ciphertext).unwrap();
+            assert_eq!(decrypted, plaintext, "roundtrip failed for size {size}");
+        }
+    }
+
+    #[test]
+    fn encrypt_output_differs_from_plaintext() {
+        let storage = MockStorage::new();
+        let plaintext = b"this should not appear in ciphertext verbatim";
+        let ciphertext = storage.encrypt(plaintext).unwrap();
+        // The nonce prefix and AES-GCM encryption ensure ciphertext differs
+        assert_ne!(&ciphertext[..], &plaintext[..]);
+        // Also verify ciphertext is longer (nonce + tag overhead)
+        assert!(ciphertext.len() > plaintext.len());
+    }
+
+    #[test]
+    fn decrypt_garbage_data_returns_error() {
+        let storage = MockStorage::new();
+        // 20 bytes of garbage — valid nonce length but bogus ciphertext
+        let garbage = vec![0xFF_u8; 20];
+        let result = storage.decrypt(&garbage);
+        assert!(result.is_err(), "decrypting garbage should fail");
+    }
+
+    #[test]
+    fn decrypt_nonce_only_returns_error() {
+        let storage = MockStorage::new();
+        // Exactly NONCE_SIZE bytes — empty ciphertext after nonce
+        let nonce_only = vec![0x00_u8; NONCE_SIZE];
+        let result = storage.decrypt(&nonce_only);
+        assert!(result.is_err(), "decrypting nonce-only data should fail");
+    }
 }

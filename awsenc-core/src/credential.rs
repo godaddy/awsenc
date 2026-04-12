@@ -175,4 +175,49 @@ mod tests {
         assert_eq!(CredentialState::Refresh.to_string(), "refresh");
         assert_eq!(CredentialState::Expired.to_string(), "expired");
     }
+
+    #[test]
+    fn credential_state_exactly_at_refresh_boundary() {
+        // Exactly refresh_window_secs remaining should be Refresh, not Fresh
+        let expiration = Utc::now() + chrono::Duration::seconds(600);
+        let state = CredentialState::from_expiration(expiration, 600);
+        assert_eq!(state, CredentialState::Refresh);
+    }
+
+    #[test]
+    fn credential_state_one_second_past_expiration() {
+        let expiration = Utc::now() - chrono::Duration::seconds(1);
+        let state = CredentialState::from_expiration(expiration, 600);
+        assert_eq!(state, CredentialState::Expired);
+    }
+
+    #[test]
+    fn credential_state_exactly_at_expiration() {
+        // At the exact expiration moment, should be Expired (now >= expiration)
+        let expiration = Utc::now();
+        let state = CredentialState::from_expiration(expiration, 600);
+        assert_eq!(state, CredentialState::Expired);
+    }
+
+    #[test]
+    fn credential_state_fresh_with_zero_refresh_window() {
+        // With zero refresh window, any remaining time > 0 should be Fresh
+        let expiration = Utc::now() + chrono::Duration::seconds(60);
+        let state = CredentialState::from_expiration(expiration, 0);
+        assert_eq!(state, CredentialState::Fresh);
+    }
+
+    #[test]
+    fn credential_state_far_future_is_fresh() {
+        let expiration = Utc::now() + chrono::Duration::days(365);
+        let state = CredentialState::from_expiration(expiration, 600);
+        assert_eq!(state, CredentialState::Fresh);
+    }
+
+    #[test]
+    fn credential_state_far_past_is_expired() {
+        let expiration = Utc::now() - chrono::Duration::days(365);
+        let state = CredentialState::from_expiration(expiration, 600);
+        assert_eq!(state, CredentialState::Expired);
+    }
 }
