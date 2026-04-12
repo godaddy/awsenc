@@ -12,7 +12,7 @@ jobs:
       unix_binaries: "awsenc"
       windows_binaries: "awsenc.exe awsenc-tpm-bridge.exe"
       wix_file: "installer/awsenc.wxs"
-      test_args: "--features awsenc-secure-storage/mock"
+      cargo_build_args: "--features awsenc-secure-storage/mock"
       homebrew_tap_repo: "jgowdy/homebrew-awsenc"
       homebrew_formula_class: "Awsenc"
       homebrew_description: "Hardware-backed AWS credential manager using Secure Enclave / TPM"
