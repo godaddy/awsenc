@@ -9,10 +9,15 @@
 #[cfg(target_os = "windows")]
 #[allow(
     unsafe_code,
+    non_camel_case_types,
+    unused,
+    trivial_casts,
+    unused_qualifications,
     clippy::upper_case_acronyms,
     clippy::ptr_as_ptr,
     clippy::unseparated_literal_suffix,
-    clippy::empty_line_after_doc_comments
+    clippy::empty_line_after_doc_comments,
+    clippy::used_underscore_binding
 )]
 mod platform {
     use std::ptr;
