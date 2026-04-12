@@ -7,7 +7,13 @@
 /// On non-Windows platforms, all operations return an error at runtime.
 
 #[cfg(target_os = "windows")]
-#[allow(unsafe_code)]
+#[allow(
+    unsafe_code,
+    clippy::upper_case_acronyms,
+    clippy::ptr_as_ptr,
+    clippy::unseparated_literal_suffix,
+    clippy::empty_line_after_doc_comments
+)]
 mod platform {
     use std::ptr;
 
