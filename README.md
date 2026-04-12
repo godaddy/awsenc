@@ -8,11 +8,33 @@ Part of the same family as [sshenc](https://github.com/jgowdy/sshenc) (SSH keys)
 
 ## Install
 
+**[Download latest release](https://github.com/jgowdy/awsenc/releases/latest)** -- pre-built binaries for macOS, Windows, and Linux.
+
 ### Homebrew (macOS)
 
 ```sh
 brew tap jgowdy/awsenc
 brew install awsenc
+```
+
+### Windows -- MSI installer
+
+Download `awsenc-x86_64-pc-windows-msvc.msi` from the
+[latest release](https://github.com/jgowdy/awsenc/releases). Double-click
+to install.
+
+### Windows -- Scoop
+
+```powershell
+scoop bucket add awsenc https://github.com/jgowdy/scoop-awsenc
+scoop install awsenc
+```
+
+### Linux -- tarball
+
+```sh
+tar xzf awsenc-x86_64-unknown-linux-gnu.tar.gz
+sudo cp awsenc awsenc-tpm-bridge /usr/local/bin/
 ```
 
 ### From source
@@ -162,10 +184,14 @@ Credentials are encrypted using **ECIES** (P-256, X9.63 KDF, AES-GCM) with a har
 
 | Platform | Backend | Notes |
 |----------|---------|-------|
-| macOS (Apple Silicon / T2) | Secure Enclave | P-256 via Security.framework |
+| macOS (Apple Silicon / T2) | Secure Enclave | CryptoKit via libenclaveapp |
 | Windows (native) | TPM 2.0 | CNG Platform Crypto Provider |
 | WSL | TPM 2.0 via bridge | JSON-RPC to Windows host |
-| Linux | File-based AES-GCM | Software only (one-time warning) |
+| Linux (with TPM) | TPM 2.0 | tss-esapi via libenclaveapp |
+| Linux (no TPM) | Software fallback | File-based AES-GCM (one-time warning) |
+
+All platform-specific crypto is provided by
+[libenclaveapp](https://github.com/jgowdy/libenclaveapp).
 
 ## Configuration
 

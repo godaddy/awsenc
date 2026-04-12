@@ -64,20 +64,15 @@ The AWS CLI never sees a file or environment variable -- it calls `awsenc serve`
 
 ## Workspace Structure
 
-Following the same patterns as `sshenc` (11-crate workspace):
+4-crate workspace plus shared dependencies from
+[libenclaveapp](https://github.com/jgowdy/libenclaveapp):
 
 ```
 awsenc/
   Cargo.toml                    # workspace root
-  DESIGN.md
-  README.md
-  THREAT_MODEL.md
-  Makefile
 
   awsenc-core/                  # Platform-independent domain logic
-    Cargo.toml
     src/
-      lib.rs
       config.rs                 # Configuration loading (TOML + env vars)
       cache.rs                  # Credential cache format, lifecycle
       credential.rs             # AWS credential types
@@ -87,24 +82,15 @@ awsenc/
       profile.rs                # AWS profile management
 
   awsenc-secure-storage/        # Hardware encryption abstraction
-    Cargo.toml
     src/
       lib.rs                    # SecureStorage trait
-      macos.rs                  # Secure Enclave via CryptoKit (ECIES)
-      windows.rs                # TPM 2.0 via CNG
-      wsl.rs                    # TPM bridge client (JSON-RPC)
-      linux.rs                  # D-Bus Secret Service (software fallback)
-
-  awsenc-ffi-apple/             # Swift/CryptoKit bridge (macOS only)
-    Cargo.toml
-    build.rs                    # swiftc compilation
-    Sources/
-      SecureEnclave.swift       # ECIES encrypt/decrypt via SE
+      macos.rs                  # Secure Enclave via enclaveapp-apple
+      windows.rs                # TPM 2.0 via enclaveapp-windows
+      wsl.rs                    # TPM bridge client via enclaveapp-bridge
+      linux.rs                  # Software fallback
 
   awsenc-cli/                   # Main CLI binary
-    Cargo.toml
     src/
-      main.rs
       cli.rs                    # clap argument parsing
       serve.rs                  # credential_process handler
       auth.rs                   # Interactive authentication flow
@@ -115,21 +101,26 @@ awsenc/
       usage.rs                  # MRU tracking (usage.json read/write)
 
   awsenc-tpm-bridge/            # Windows TPM bridge for WSL
-    Cargo.toml
     src/
       main.rs                   # JSON-RPC server over stdin/stdout
-      tpm.rs                    # CNG encrypt/decrypt
+      tpm.rs                    # CNG encrypt/decrypt via enclaveapp-bridge
 ```
 
 ### Crate Responsibilities
 
-| Crate | Role | Parallel in sshenc |
-|-------|------|-------------------|
-| `awsenc-core` | Config, cache, Okta auth, STS, credential types | `sshenc-core` |
-| `awsenc-secure-storage` | `SecureStorage` trait + platform impls | `sshenc-se` |
-| `awsenc-ffi-apple` | Swift bridge for Secure Enclave | `sshenc-ffi-apple` |
-| `awsenc-cli` | CLI binary, credential_process handler | `sshenc-cli` |
-| `awsenc-tpm-bridge` | WSL-to-Windows TPM bridge | — |
+| Crate | Role |
+|-------|------|
+| `awsenc-core` | Config, cache, Okta auth, STS, credential types |
+| `awsenc-secure-storage` | `SecureStorage` trait + platform dispatch (delegates to libenclaveapp) |
+| `awsenc-cli` | CLI binary, credential_process handler, interactive picker |
+| `awsenc-tpm-bridge` | WSL-to-Windows TPM bridge (uses enclaveapp-bridge) |
+
+### libenclaveapp Dependency
+
+All platform-specific crypto is delegated to libenclaveapp's `encryption`
+feature. awsenc-secure-storage wraps libenclaveapp's `EnclaveEncryptor`
+trait into awsenc's `SecureStorage` trait. The former `awsenc-ffi-apple`
+crate (direct CryptoKit bridge) has been removed.
 
 ---
 
@@ -137,12 +128,13 @@ awsenc/
 
 | Platform | Hardware Backend | Credential Storage | Notes |
 |----------|-----------------|-------------------|-------|
-| macOS (Apple Silicon / T2) | Secure Enclave | ECIES-encrypted files | P-256 via CryptoKit |
-| Windows (native) | TPM 2.0 | ECIES-encrypted files | CNG Platform Crypto Provider |
+| macOS (Apple Silicon / T2) | Secure Enclave | ECIES-encrypted files | P-256 via CryptoKit (enclaveapp-apple) |
+| Windows (native) | TPM 2.0 | ECIES-encrypted files | CNG Platform Crypto Provider (enclaveapp-windows) |
 | Windows (PowerShell) | TPM 2.0 | ECIES-encrypted files | Native binary |
 | Windows (Git Bash) | TPM 2.0 | ECIES-encrypted files | Same Windows binary |
 | WSL | TPM 2.0 (via bridge) | ECIES-encrypted files | JSON-RPC to `awsenc-tpm-bridge.exe` on host |
-| Linux | D-Bus Secret Service | Keyring-backed | Software only; one-time warning |
+| Linux (with TPM) | TPM 2.0 | ECIES-encrypted files | tss-esapi (enclaveapp-linux-tpm) |
+| Linux (no TPM) | Software | File-based AES-GCM | Software fallback; one-time warning |
 
 ### WSL Bridge Architecture
 
