@@ -24,8 +24,7 @@ rand = { version = "0.8", optional = true }
 enclaveapp-core = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-aes-gcm = { version = "0.10" }
-rand = { version = "0.8" }
+enclaveapp-software = { workspace = true }
 enclaveapp-bridge = { workspace = true }
 enclaveapp-wsl = { workspace = true }
 
