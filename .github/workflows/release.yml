@@ -15,12 +15,8 @@ jobs:
       windows_binaries: "awsenc.exe awsenc-tpm-bridge.exe"
       wix_file: "installer/awsenc.wxs"
       cargo_build_args: "--features awsenc-secure-storage/mock"
-      homebrew_tap_repo: "jgowdy/homebrew-awsenc"
-      homebrew_formula_class: "Awsenc"
-      homebrew_description: "Hardware-backed AWS credential manager using Secure Enclave / TPM"
-      scoop_bucket_repo: "jgowdy/scoop-awsenc"
-      scoop_description: "Hardware-backed AWS credential manager (Windows TPM 2.0)"
-      has_winget: true
+      homebrew: '{"tap_repo":"jgowdy/homebrew-awsenc","formula_class":"Awsenc","description":"Hardware-backed AWS credential manager using Secure Enclave / TPM"}'
+      scoop: '{"bucket_repo":"jgowdy/scoop-awsenc","description":"Hardware-backed AWS credential manager (Windows TPM 2.0)","has_winget":true}'
     secrets:
       HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
       SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
