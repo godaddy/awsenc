@@ -4,7 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 jobs:
   ci:
@@ -12,3 +11,4 @@ jobs:
     with:
       platforms: '["macos-latest", "ubuntu-latest", "windows-latest"]'
       cargo_args: "--features awsenc-secure-storage/mock"
+      linux_deps: "libdbus-1-dev pkg-config"
