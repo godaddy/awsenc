@@ -15,11 +15,8 @@ jobs:
         os: [macos-latest, ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: jgowdy/libenclaveapp
-          path: ../libenclaveapp
-          token: ${{ secrets.LIBENCLAVEAPP_TOKEN }}
+      - name: Clone libenclaveapp
+        run: git clone --depth 1 https://github.com/jgowdy/libenclaveapp.git ../libenclaveapp
       - uses: dtolnay/rust-toolchain@stable
       - name: Format check
         run: cargo fmt --all -- --check
