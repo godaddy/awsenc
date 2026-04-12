@@ -70,6 +70,13 @@ jobs:
           Copy-Item "target/${{ matrix.target }}/release/awsenc-tpm-bridge.exe" dist/
           Compress-Archive -Path dist/* -DestinationPath "awsenc-${{ matrix.target }}.zip"
 
+      - name: Build MSI (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.*
+          wix build installer/awsenc.wxs -o awsenc-${{ matrix.target }}.msi -bindpath .
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -94,6 +101,7 @@ jobs:
           cp artifacts/awsenc-aarch64-apple-darwin/awsenc-aarch64-apple-darwin.tar.gz release/
           cp artifacts/awsenc-x86_64-apple-darwin/awsenc-x86_64-apple-darwin.tar.gz release/
           cp artifacts/awsenc-x86_64-pc-windows-msvc/awsenc-x86_64-pc-windows-msvc.zip release/
+          cp artifacts/awsenc-x86_64-pc-windows-msvc/awsenc-x86_64-pc-windows-msvc.msi release/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -101,56 +109,51 @@ jobs:
           files: release/*
           generate_release_notes: true
 
-  update-homebrew:
-    name: Update Homebrew Formula
+  update-packages:
+    name: Update Package Managers
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - name: Download macOS artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
         with:
           path: artifacts
 
-      - name: Extract version from tag
-        id: version
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
-
-      - name: Compute SHA256 checksums
+      - name: Compute SHA256s
         id: sha
         run: |
-          ARM_SHA=$(sha256sum artifacts/awsenc-aarch64-apple-darwin/awsenc-aarch64-apple-darwin.tar.gz | cut -d ' ' -f 1)
-          X86_SHA=$(sha256sum artifacts/awsenc-x86_64-apple-darwin/awsenc-x86_64-apple-darwin.tar.gz | cut -d ' ' -f 1)
-          echo "arm64=$ARM_SHA" >> "$GITHUB_OUTPUT"
-          echo "x86_64=$X86_SHA" >> "$GITHUB_OUTPUT"
+          arm_sha=$(sha256sum artifacts/awsenc-aarch64-apple-darwin/awsenc-aarch64-apple-darwin.tar.gz | cut -d' ' -f1)
+          intel_sha=$(sha256sum artifacts/awsenc-x86_64-apple-darwin/awsenc-x86_64-apple-darwin.tar.gz | cut -d' ' -f1)
+          win_sha=$(sha256sum artifacts/awsenc-x86_64-pc-windows-msvc/awsenc-x86_64-pc-windows-msvc.zip | cut -d' ' -f1)
+          msi_sha=$(sha256sum artifacts/awsenc-x86_64-pc-windows-msvc/awsenc-x86_64-pc-windows-msvc.msi | cut -d' ' -f1)
+          echo "arm_sha256=$arm_sha" >> "$GITHUB_OUTPUT"
+          echo "intel_sha256=$intel_sha" >> "$GITHUB_OUTPUT"
+          echo "win_sha256=$win_sha" >> "$GITHUB_OUTPUT"
+          echo "msi_sha256=$msi_sha" >> "$GITHUB_OUTPUT"
 
-      - name: Clone homebrew-awsenc tap repo
-        uses: actions/checkout@v4
-        with:
-          repository: jgowdy/homebrew-awsenc
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          path: homebrew-awsenc
-
-      - name: Update Formula
+      - name: Update Homebrew tap
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          ARM_SHA="${{ steps.sha.outputs.arm64 }}"
-          X86_SHA="${{ steps.sha.outputs.x86_64 }}"
+          tag="${GITHUB_REF#refs/tags/}"
+          version="${tag#v}"
 
-          cat > homebrew-awsenc/Formula/awsenc.rb << FORMULA
+          git clone https://x-access-token:${{ secrets.HOMEBREW_TAP_TOKEN }}@github.com/jgowdy/homebrew-awsenc.git /tmp/tap
+
+          cat > /tmp/tap/Formula/awsenc.rb << FORMULA
           class Awsenc < Formula
             desc "Hardware-backed AWS credential manager using Secure Enclave / TPM"
             homepage "https://github.com/jgowdy/awsenc"
-            version "${VERSION}"
+            version "${version}"
             license "MIT"
 
             on_arm do
-              url "https://github.com/jgowdy/awsenc/releases/download/v${VERSION}/awsenc-aarch64-apple-darwin.tar.gz"
-              sha256 "${ARM_SHA}"
+              url "https://github.com/jgowdy/awsenc/releases/download/${tag}/awsenc-aarch64-apple-darwin.tar.gz"
+              sha256 "${{ steps.sha.outputs.arm_sha256 }}"
             end
 
             on_intel do
-              url "https://github.com/jgowdy/awsenc/releases/download/v${VERSION}/awsenc-x86_64-apple-darwin.tar.gz"
-              sha256 "${X86_SHA}"
+              url "https://github.com/jgowdy/awsenc/releases/download/${tag}/awsenc-x86_64-apple-darwin.tar.gz"
+              sha256 "${{ steps.sha.outputs.intel_sha256 }}"
             end
 
             depends_on :macos
@@ -186,58 +189,32 @@ jobs:
             end
           end
           FORMULA
+          sed -i 's/^          //' /tmp/tap/Formula/awsenc.rb
 
-      - name: Commit and push formula update
-        working-directory: homebrew-awsenc
-        run: |
+          cd /tmp/tap
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/awsenc.rb
-          git diff --staged --quiet || git commit -m "Update awsenc to v${{ steps.version.outputs.version }}"
-          git push origin main
+          git add -A
+          git diff --cached --quiet || git commit -m "Update awsenc to ${tag}"
+          git push
 
-  update-scoop:
-    name: Update Scoop Manifest
-    needs: release
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download Windows artifact
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Extract version from tag
-        id: version
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
-
-      - name: Compute SHA256 checksum
-        id: sha
+      - name: Update Scoop bucket
         run: |
-          WIN_SHA=$(sha256sum artifacts/awsenc-x86_64-pc-windows-msvc/awsenc-x86_64-pc-windows-msvc.zip | cut -d ' ' -f 1)
-          echo "windows=$WIN_SHA" >> "$GITHUB_OUTPUT"
+          tag="${GITHUB_REF#refs/tags/}"
+          version="${tag#v}"
 
-      - name: Clone scoop-awsenc bucket repo
-        uses: actions/checkout@v4
-        with:
-          repository: jgowdy/scoop-awsenc
-          token: ${{ secrets.SCOOP_BUCKET_TOKEN }}
-          path: scoop-awsenc
+          git clone https://x-access-token:${{ secrets.SCOOP_BUCKET_TOKEN }}@github.com/jgowdy/scoop-awsenc.git /tmp/bucket
 
-      - name: Update manifest
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          WIN_SHA="${{ steps.sha.outputs.windows }}"
-
-          cat > scoop-awsenc/bucket/awsenc.json << MANIFEST
+          cat > /tmp/bucket/bucket/awsenc.json << SCOOP
           {
-              "version": "${VERSION}",
+              "version": "${version}",
               "description": "Hardware-backed AWS credential manager (Windows TPM 2.0)",
               "homepage": "https://github.com/jgowdy/awsenc",
               "license": "MIT",
               "architecture": {
                   "64bit": {
-                      "url": "https://github.com/jgowdy/awsenc/releases/download/v${VERSION}/awsenc-x86_64-pc-windows-msvc.zip",
-                      "hash": "${WIN_SHA}"
+                      "url": "https://github.com/jgowdy/awsenc/releases/download/${tag}/awsenc-x86_64-pc-windows-msvc.zip",
+                      "hash": "${{ steps.sha.outputs.win_sha256 }}"
                   }
               },
               "bin": [
@@ -251,13 +228,45 @@ jobs:
                   "Run 'awsenc shell-init powershell' for shell integration."
               ]
           }
-          MANIFEST
+          SCOOP
+          sed -i 's/^          //' /tmp/bucket/bucket/awsenc.json
 
-      - name: Commit and push manifest update
-        working-directory: scoop-awsenc
-        run: |
+          cd /tmp/bucket
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add bucket/awsenc.json
-          git diff --staged --quiet || git commit -m "Update awsenc to v${{ steps.version.outputs.version }}"
-          git push origin main
+          git add -A
+          git diff --cached --quiet || git commit -m "Update awsenc to ${tag}"
+          git push
+
+      - name: Generate winget manifest
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          version="${tag#v}"
+          msi_sha=$(echo "${{ steps.sha.outputs.msi_sha256 }}" | tr 'a-f' 'A-F')
+
+          mkdir -p /tmp/winget
+
+          sed -e "s/PackageVersion: .*/PackageVersion: ${version}/" \
+            winget/JGowdy.awsenc.yaml > /tmp/winget/JGowdy.awsenc.yaml
+
+          sed -e "s/PackageVersion: .*/PackageVersion: ${version}/" \
+              -e "s|InstallerUrl: .*|InstallerUrl: https://github.com/jgowdy/awsenc/releases/download/${tag}/awsenc-x86_64-pc-windows-msvc.msi|" \
+              -e "s/InstallerSha256: .*/InstallerSha256: ${msi_sha}/" \
+            winget/JGowdy.awsenc.installer.yaml > /tmp/winget/JGowdy.awsenc.installer.yaml
+
+          sed -e "s/PackageVersion: .*/PackageVersion: ${version}/" \
+              -e "s|ReleaseNotesUrl: .*|ReleaseNotesUrl: https://github.com/jgowdy/awsenc/releases/tag/${tag}|" \
+            winget/JGowdy.awsenc.locale.en-US.yaml > /tmp/winget/JGowdy.awsenc.locale.en-US.yaml
+
+          echo "Generated winget manifests for ${version}:"
+          cat /tmp/winget/JGowdy.awsenc.yaml
+          echo "---"
+          cat /tmp/winget/JGowdy.awsenc.installer.yaml
+          echo "---"
+          cat /tmp/winget/JGowdy.awsenc.locale.en-US.yaml
+
+      - name: Upload winget manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: winget-manifest
+          path: /tmp/winget/
