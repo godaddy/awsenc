@@ -136,3 +136,181 @@ fn get_profile_region(profile: &str) -> Option<String> {
     let resolved = config::resolve_config(profile, &global, &profile_config, &overrides).ok()?;
     resolved.region
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use awsenc_secure_storage::mock::MockStorage;
+
+    // Mutex to serialize tests that modify the HOME env var
+    static HOME_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn setup_temp_home(tmp: &tempfile::TempDir) -> Option<String> {
+        let prev = std::env::var("HOME").ok();
+        let config_dir = tmp.path().join(".config").join("awsenc");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::env::set_var("HOME", tmp.path());
+        prev
+    }
+
+    fn restore_home(prev: Option<String>) {
+        match prev {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    #[test]
+    fn get_cached_credentials_returns_none_when_no_cache() {
+        let _lock = HOME_MUTEX.lock().expect("mutex poisoned");
+        let tmp = tempfile::tempdir().unwrap();
+        let prev = setup_temp_home(&tmp);
+        let storage = MockStorage::new();
+        let result = get_cached_credentials("nonexistent-profile-xyz", &storage).unwrap();
+        assert!(result.is_none());
+        restore_home(prev);
+    }
+
+    #[test]
+    fn get_cached_credentials_returns_creds_when_fresh() {
+        use awsenc_core::cache::{self, CacheFile, CacheHeader, FORMAT_VERSION, MAGIC};
+        use zeroize::Zeroizing;
+
+        let _lock = HOME_MUTEX.lock().expect("mutex poisoned");
+        let tmp = tempfile::tempdir().unwrap();
+        let prev = setup_temp_home(&tmp);
+        let storage = MockStorage::new();
+
+        let creds = AwsCredentials {
+            access_key_id: "AKIATEST".to_string(),
+            secret_access_key: Zeroizing::new("secretkey".to_string()),
+            session_token: Zeroizing::new("sessiontoken".to_string()),
+            expiration: Utc::now() + chrono::Duration::hours(1),
+        };
+        let creds_json = serde_json::to_vec(&creds).unwrap();
+        let ciphertext = storage.encrypt(&creds_json).unwrap();
+
+        #[allow(clippy::cast_sign_loss)]
+        let expiration_ts = creds.expiration.timestamp() as u64;
+        let cache_file = CacheFile {
+            header: CacheHeader {
+                magic: MAGIC,
+                version: FORMAT_VERSION,
+                flags: 0,
+                credential_expiration: expiration_ts,
+                okta_session_expiration: 0,
+            },
+            aws_ciphertext: ciphertext,
+            okta_session_ciphertext: None,
+        };
+
+        let profile = "test-cached-creds";
+        cache::write_cache(profile, &cache_file).unwrap();
+
+        let result = get_cached_credentials(profile, &storage).unwrap();
+        assert!(result.is_some(), "should return cached credentials");
+        let recovered = result.unwrap();
+        assert_eq!(recovered.access_key_id, "AKIATEST");
+
+        drop(cache::delete_cache(profile));
+        restore_home(prev);
+    }
+
+    #[test]
+    fn get_cached_credentials_returns_none_when_expired() {
+        use awsenc_core::cache::{self, CacheFile, CacheHeader, FORMAT_VERSION, MAGIC};
+        use zeroize::Zeroizing;
+
+        let _lock = HOME_MUTEX.lock().expect("mutex poisoned");
+        let tmp = tempfile::tempdir().unwrap();
+        let prev = setup_temp_home(&tmp);
+        let storage = MockStorage::new();
+
+        let creds = AwsCredentials {
+            access_key_id: "AKIATEST".to_string(),
+            secret_access_key: Zeroizing::new("secretkey".to_string()),
+            session_token: Zeroizing::new("sessiontoken".to_string()),
+            expiration: Utc::now() - chrono::Duration::hours(1),
+        };
+        let creds_json = serde_json::to_vec(&creds).unwrap();
+        let ciphertext = storage.encrypt(&creds_json).unwrap();
+
+        #[allow(clippy::cast_sign_loss)]
+        let expiration_ts = creds.expiration.timestamp() as u64;
+        let cache_file = CacheFile {
+            header: CacheHeader {
+                magic: MAGIC,
+                version: FORMAT_VERSION,
+                flags: 0,
+                credential_expiration: expiration_ts,
+                okta_session_expiration: 0,
+            },
+            aws_ciphertext: ciphertext,
+            okta_session_ciphertext: None,
+        };
+
+        let profile = "test-expired-creds";
+        cache::write_cache(profile, &cache_file).unwrap();
+
+        let result = get_cached_credentials(profile, &storage).unwrap();
+        assert!(result.is_none(), "should return None for expired credentials");
+
+        drop(cache::delete_cache(profile));
+        restore_home(prev);
+    }
+
+    #[test]
+    fn exec_args_resolved_profile_positional() {
+        let args = ExecArgs {
+            profile_positional: Some("my-profile".to_string()),
+            profile_flag: None,
+            command: vec!["echo".to_string()],
+        };
+        assert_eq!(args.resolved_profile(), Some("my-profile"));
+    }
+
+    #[test]
+    fn exec_args_resolved_profile_flag() {
+        let args = ExecArgs {
+            profile_positional: None,
+            profile_flag: Some("flag-profile".to_string()),
+            command: vec!["echo".to_string()],
+        };
+        assert_eq!(args.resolved_profile(), Some("flag-profile"));
+    }
+
+    #[test]
+    fn exec_args_resolved_profile_none() {
+        let args = ExecArgs {
+            profile_positional: None,
+            profile_flag: None,
+            command: vec!["echo".to_string()],
+        };
+        assert_eq!(args.resolved_profile(), None);
+    }
+
+    #[test]
+    fn get_profile_region_returns_none_for_nonexistent() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", tmp.path());
+        assert!(get_profile_region("nonexistent-profile").is_none());
+    }
+
+    #[tokio::test]
+    async fn run_exec_empty_command_returns_error() {
+        let storage = MockStorage::new();
+        let args = ExecArgs {
+            profile_positional: Some("test".to_string()),
+            profile_flag: None,
+            command: vec![],
+        };
+        let result = run_exec(&args, &storage).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("no command"),
+            "expected 'no command' error, got: {err}"
+        );
+    }
+}

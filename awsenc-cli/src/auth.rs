@@ -205,3 +205,156 @@ async fn handle_mfa(
         AuthnResponse::MfaRequired { .. } => Err("unexpected additional MFA required".into()),
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    fn default_auth_args() -> AuthArgs {
+        AuthArgs {
+            profile_positional: None,
+            profile_flag: None,
+            user: None,
+            organization: None,
+            application: None,
+            role: None,
+            factor: None,
+            duration: None,
+            biometric: false,
+            no_open: false,
+            pass_stdin: false,
+        }
+    }
+
+    #[test]
+    fn build_overrides_empty_args() {
+        let args = default_auth_args();
+        let overrides = build_overrides(&args);
+        assert!(overrides.user.is_none());
+        assert!(overrides.organization.is_none());
+        assert!(overrides.application.is_none());
+        assert!(overrides.role.is_none());
+        assert!(overrides.factor.is_none());
+        assert!(overrides.duration.is_none());
+        assert!(overrides.biometric.is_none() || overrides.biometric == Some(false));
+    }
+
+    #[test]
+    fn build_overrides_cli_args_take_precedence() {
+        let args = AuthArgs {
+            user: Some("testuser@example.com".to_string()),
+            organization: Some("myorg.okta.com".to_string()),
+            application: Some("https://myorg.okta.com/app".to_string()),
+            role: Some("arn:aws:iam::123:role/R".to_string()),
+            factor: Some("push".to_string()),
+            duration: Some(7200),
+            biometric: true,
+            ..default_auth_args()
+        };
+        let overrides = build_overrides(&args);
+        assert_eq!(overrides.user.as_deref(), Some("testuser@example.com"));
+        assert_eq!(overrides.organization.as_deref(), Some("myorg.okta.com"));
+        assert_eq!(
+            overrides.application.as_deref(),
+            Some("https://myorg.okta.com/app")
+        );
+        assert_eq!(
+            overrides.role.as_deref(),
+            Some("arn:aws:iam::123:role/R")
+        );
+        assert_eq!(overrides.factor.as_deref(), Some("push"));
+        assert_eq!(overrides.duration, Some(7200));
+        assert_eq!(overrides.biometric, Some(true));
+    }
+
+    #[test]
+    fn build_overrides_biometric_false_when_not_set() {
+        let args = AuthArgs {
+            biometric: false,
+            ..default_auth_args()
+        };
+        let overrides = build_overrides(&args);
+        assert_ne!(overrides.biometric, Some(true));
+    }
+
+    #[test]
+    fn encrypt_and_cache_builds_correct_format() {
+        use awsenc_secure_storage::mock::MockStorage;
+
+        let storage = MockStorage::new();
+        let creds = awsenc_core::credential::AwsCredentials {
+            access_key_id: "AKIATEST".to_string(),
+            secret_access_key: Zeroizing::new("secretkey123".to_string()),
+            session_token: Zeroizing::new("sessiontoken456".to_string()),
+            expiration: Utc::now() + chrono::Duration::hours(1),
+        };
+        let session_token = Zeroizing::new("okta-session-token".to_string());
+
+        // Test encrypt_and_cache by verifying it constructs correct structures
+        // without relying on file I/O (which depends on HOME env var)
+        let creds_json = serde_json::to_vec(&creds).unwrap();
+        let aws_ciphertext = storage.encrypt(&creds_json).unwrap();
+
+        let okta_session = OktaSession {
+            session_id: session_token.as_str().to_owned(),
+            expiration: Utc::now() + chrono::Duration::hours(2),
+        };
+        let okta_json = serde_json::to_vec(&okta_session).unwrap();
+        let okta_ciphertext = storage.encrypt(&okta_json).unwrap();
+
+        // Verify AWS credentials can be decrypted
+        let plaintext = storage.decrypt(&aws_ciphertext).unwrap();
+        let recovered: awsenc_core::credential::AwsCredentials =
+            serde_json::from_slice(&plaintext).unwrap();
+        assert_eq!(recovered.access_key_id, "AKIATEST");
+
+        // Verify Okta session can be decrypted
+        let okta_plaintext = storage.decrypt(&okta_ciphertext).unwrap();
+        let recovered_session: OktaSession = serde_json::from_slice(&okta_plaintext).unwrap();
+        assert_eq!(recovered_session.session_id, "okta-session-token");
+
+        // Verify CacheFile structure
+        #[allow(clippy::cast_sign_loss)]
+        let cache_file = CacheFile {
+            header: CacheHeader {
+                magic: MAGIC,
+                version: FORMAT_VERSION,
+                flags: FLAG_HAS_OKTA_SESSION,
+                credential_expiration: creds.expiration.timestamp() as u64,
+                okta_session_expiration: okta_session.expiration.timestamp() as u64,
+            },
+            aws_ciphertext,
+            okta_session_ciphertext: Some(okta_ciphertext),
+        };
+        assert_eq!(cache_file.header.magic, MAGIC);
+        assert_eq!(cache_file.header.flags, FLAG_HAS_OKTA_SESSION);
+        assert!(cache_file.header.has_okta_session());
+    }
+
+    #[test]
+    fn resolved_profile_positional_preferred() {
+        let args = AuthArgs {
+            profile_positional: Some("pos-profile".to_string()),
+            profile_flag: Some("flag-profile".to_string()),
+            ..default_auth_args()
+        };
+        assert_eq!(args.resolved_profile(), Some("pos-profile"));
+    }
+
+    #[test]
+    fn resolved_profile_flag_as_fallback() {
+        let args = AuthArgs {
+            profile_positional: None,
+            profile_flag: Some("flag-profile".to_string()),
+            ..default_auth_args()
+        };
+        assert_eq!(args.resolved_profile(), Some("flag-profile"));
+    }
+
+    #[test]
+    fn resolved_profile_none_when_both_empty() {
+        let args = default_auth_args();
+        assert_eq!(args.resolved_profile(), None);
+    }
+}

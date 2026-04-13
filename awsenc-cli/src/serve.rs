@@ -194,3 +194,107 @@ async fn try_transparent_reauth(
 
     Ok(creds)
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_serve_profile_explicit() {
+        let args = ServeArgs {
+            profile: Some("my-profile".to_string()),
+            active: false,
+        };
+        let result = resolve_serve_profile(&args).unwrap();
+        assert_eq!(result, "my-profile");
+    }
+
+    #[test]
+    fn resolve_serve_profile_no_profile_no_active_no_env() {
+        let prev = std::env::var("AWSENC_PROFILE").ok();
+        std::env::remove_var("AWSENC_PROFILE");
+
+        let args = ServeArgs {
+            profile: None,
+            active: false,
+        };
+        let result = resolve_serve_profile(&args);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("no profile specified"),
+            "expected 'no profile specified', got: {err}"
+        );
+
+        if let Some(v) = prev {
+            std::env::set_var("AWSENC_PROFILE", v);
+        }
+    }
+
+    #[test]
+    fn resolve_serve_profile_active_flag_without_env() {
+        let prev = std::env::var("AWSENC_PROFILE").ok();
+        std::env::remove_var("AWSENC_PROFILE");
+
+        let args = ServeArgs {
+            profile: None,
+            active: true,
+        };
+        let result = resolve_serve_profile(&args);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("AWSENC_PROFILE is not set"),
+            "expected AWSENC_PROFILE error, got: {err}"
+        );
+
+        if let Some(v) = prev {
+            std::env::set_var("AWSENC_PROFILE", v);
+        }
+    }
+
+    #[test]
+    fn decrypt_aws_credentials_success() {
+        use awsenc_secure_storage::mock::MockStorage;
+        use zeroize::Zeroizing;
+
+        let storage = MockStorage::new();
+        let creds = AwsCredentials {
+            access_key_id: "AKIAEXAMPLE".to_string(),
+            secret_access_key: Zeroizing::new("secret".to_string()),
+            session_token: Zeroizing::new("token".to_string()),
+            expiration: Utc::now() + chrono::Duration::hours(1),
+        };
+        let json = serde_json::to_vec(&creds).unwrap();
+        let ciphertext = storage.encrypt(&json).unwrap();
+
+        let recovered = decrypt_aws_credentials(&storage, &ciphertext).unwrap();
+        assert_eq!(recovered.access_key_id, "AKIAEXAMPLE");
+    }
+
+    #[test]
+    fn decrypt_aws_credentials_bad_ciphertext() {
+        use awsenc_secure_storage::mock::MockStorage;
+
+        let storage = MockStorage::new();
+        let result = decrypt_aws_credentials(&storage, &[0xFF; 50]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn output_credentials_produces_json() {
+        use zeroize::Zeroizing;
+
+        let creds = AwsCredentials {
+            access_key_id: "AKIDTEST".to_string(),
+            secret_access_key: Zeroizing::new("secret".to_string()),
+            session_token: Zeroizing::new("token".to_string()),
+            expiration: Utc::now(),
+        };
+        let output = CredentialProcessOutput::from_credentials(&creds);
+        let json = serde_json::to_string(&output).unwrap();
+        assert!(json.contains("AKIDTEST"));
+        assert!(json.contains("Version"));
+    }
+}

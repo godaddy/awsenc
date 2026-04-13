@@ -359,3 +359,113 @@ fn run_config() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_expires_future_less_than_hour() {
+        let exp = Some(chrono::Utc::now() + chrono::Duration::minutes(45));
+        let result = format_expires(exp);
+        assert!(
+            result.contains("m"),
+            "expected minutes notation, got: {result}"
+        );
+        assert!(!result.contains("h"), "should not contain hours: {result}");
+    }
+
+    #[test]
+    fn format_expires_future_more_than_hour() {
+        let exp =
+            Some(chrono::Utc::now() + chrono::Duration::hours(2) + chrono::Duration::minutes(30));
+        let result = format_expires(exp);
+        assert!(result.contains("h"), "expected hours notation, got: {result}");
+        assert!(result.contains("m"), "expected minutes notation, got: {result}");
+    }
+
+    #[test]
+    fn format_expires_past() {
+        let exp = Some(chrono::Utc::now() - chrono::Duration::minutes(10));
+        let result = format_expires(exp);
+        assert_eq!(result, "--");
+    }
+
+    #[test]
+    fn format_expires_none() {
+        let result = format_expires(None);
+        assert_eq!(result, "--");
+    }
+
+    #[test]
+    fn resolve_interactive_profile_explicit() {
+        let result = resolve_interactive_profile(Some("myprofile")).unwrap();
+        assert_eq!(result, "myprofile");
+    }
+
+    #[test]
+    fn resolve_biometric_for_nonexistent_profile() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", tmp.path());
+        let result = resolve_biometric_for_profile("nonexistent-profile-xyz", false);
+        assert!(!result);
+    }
+
+    #[test]
+    fn resolve_biometric_for_profile_cli_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", tmp.path());
+        let result = resolve_biometric_for_profile("nonexistent-profile-xyz", true);
+        assert!(result);
+    }
+
+    #[test]
+    fn resolve_biometric_from_serve_empty_profile() {
+        let prev = std::env::var("AWSENC_PROFILE").ok();
+        std::env::remove_var("AWSENC_PROFILE");
+
+        let args = cli::ServeArgs {
+            profile: None,
+            active: false,
+        };
+        let result = resolve_biometric_from_serve(&args);
+        assert!(!result);
+
+        if let Some(v) = prev {
+            std::env::set_var("AWSENC_PROFILE", v);
+        }
+    }
+
+    #[test]
+    fn resolve_biometric_from_exec_empty_profile() {
+        let prev = std::env::var("AWSENC_PROFILE").ok();
+        std::env::remove_var("AWSENC_PROFILE");
+
+        let args = cli::ExecArgs {
+            profile_positional: None,
+            profile_flag: None,
+            command: vec!["echo".to_string()],
+        };
+        let result = resolve_biometric_from_exec(&args);
+        assert!(!result);
+
+        if let Some(v) = prev {
+            std::env::set_var("AWSENC_PROFILE", v);
+        }
+    }
+
+    #[test]
+    fn resolve_biometric_from_exec_with_profile() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", tmp.path());
+
+        let args = cli::ExecArgs {
+            profile_positional: Some("some-profile".to_string()),
+            profile_flag: None,
+            command: vec!["echo".to_string()],
+        };
+        let result = resolve_biometric_from_exec(&args);
+        assert!(!result);
+    }
+}

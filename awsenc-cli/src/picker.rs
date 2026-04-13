@@ -238,4 +238,76 @@ mod tests {
         };
         assert_eq!(format_status(&info), "not cached");
     }
+
+    #[test]
+    fn format_status_fresh_with_hours() {
+        let info = ProfileInfo {
+            name: "test".into(),
+            has_config: true,
+            cache_state: Some(CredentialState::Fresh),
+            expiration: Some(Utc::now() + chrono::Duration::hours(2) + chrono::Duration::minutes(30)),
+            okta_session_expiration: None,
+        };
+        let status = format_status(&info);
+        assert!(status.contains("2h"), "expected hours in status: {status}");
+        assert!(status.contains("m"), "expected minutes in status: {status}");
+    }
+
+    #[test]
+    fn format_status_refresh_state() {
+        let info = ProfileInfo {
+            name: "test".into(),
+            has_config: true,
+            cache_state: Some(CredentialState::Refresh),
+            expiration: Some(Utc::now() + chrono::Duration::minutes(5)),
+            okta_session_expiration: None,
+        };
+        let status = format_status(&info);
+        assert!(
+            status.contains("authenticated"),
+            "refresh state should show authenticated: {status}"
+        );
+    }
+
+    #[test]
+    fn format_status_fresh_no_expiration() {
+        let info = ProfileInfo {
+            name: "test".into(),
+            has_config: true,
+            cache_state: Some(CredentialState::Fresh),
+            expiration: None,
+            okta_session_expiration: None,
+        };
+        let status = format_status(&info);
+        assert_eq!(status, "authenticated");
+    }
+
+    #[test]
+    fn format_status_fresh_just_expired() {
+        // Edge case: state is Fresh (or Refresh) but expiration is actually past
+        let info = ProfileInfo {
+            name: "test".into(),
+            has_config: true,
+            cache_state: Some(CredentialState::Fresh),
+            expiration: Some(Utc::now() - chrono::Duration::seconds(1)),
+            okta_session_expiration: None,
+        };
+        let status = format_status(&info);
+        assert_eq!(status, "expired");
+    }
+
+    #[test]
+    fn pick_profile_empty_returns_error() {
+        // Cannot test the interactive picker without a TTY, but we can test
+        // the empty profiles case
+        let profiles: Vec<ProfileInfo> = vec![];
+        let usage = UsageData::default();
+        let result = pick_profile(&profiles, &usage, None);
+        assert!(result.is_err());
+        let err = result.expect_err("should be an error").to_string();
+        assert!(
+            err.contains("no profiles") || err.contains("TTY"),
+            "expected descriptive error, got: {err}"
+        );
+    }
 }

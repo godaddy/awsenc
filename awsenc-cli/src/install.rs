@@ -461,4 +461,104 @@ region = us-west-2
         let result = upsert_managed_block("", "test", &block);
         assert!(result.contains("[profile test]"));
     }
+
+    #[test]
+    fn find_okta_processor_entries_multiple() {
+        let content = r"
+[profile account1]
+credential_process = aws-okta-processor authenticate --organization org1.okta.com --application https://org1.okta.com/app1 --role arn:aws:iam::111:role/Role1 --factor push
+region = us-east-1
+
+[profile account2]
+credential_process = aws-okta-processor authenticate --organization org2.okta.com --application https://org2.okta.com/app2 --role arn:aws:iam::222:role/Role2 --factor totp --duration 7200
+";
+        let entries = find_okta_processor_entries(content);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].profile_name, "account1");
+        assert_eq!(entries[0].organization.as_deref(), Some("org1.okta.com"));
+        assert_eq!(entries[0].factor.as_deref(), Some("push"));
+        assert!(entries[0].duration.is_none());
+
+        assert_eq!(entries[1].profile_name, "account2");
+        assert_eq!(entries[1].organization.as_deref(), Some("org2.okta.com"));
+        assert_eq!(entries[1].factor.as_deref(), Some("totp"));
+        assert_eq!(entries[1].duration, Some(7200));
+    }
+
+    #[test]
+    fn find_okta_processor_entries_with_secondary_role() {
+        let content = r"
+[profile withsecondary]
+credential_process = aws-okta-processor authenticate --organization org.okta.com --application https://org.okta.com/app --role arn:aws:iam::123:role/Primary --secondary-role arn:aws:iam::456:role/Secondary
+";
+        let entries = find_okta_processor_entries(content);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].secondary_role.as_deref(),
+            Some("arn:aws:iam::456:role/Secondary")
+        );
+    }
+
+    #[test]
+    fn find_okta_processor_entries_non_profile_section() {
+        let content = r"
+[account1]
+credential_process = aws-okta-processor authenticate --organization org.okta.com
+";
+        let entries = find_okta_processor_entries(content);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].profile_name, "account1");
+    }
+
+    #[test]
+    fn find_okta_processor_entries_underscore_variant() {
+        let content = r"
+[profile test]
+credential_process = aws_okta_processor authenticate --organization org.okta.com
+";
+        let entries = find_okta_processor_entries(content);
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn find_okta_processor_entries_quoted_values() {
+        let content = r#"
+[profile quoted]
+credential_process = aws-okta-processor authenticate --organization "my org.okta.com" --application "https://example.com/app"
+"#;
+        let entries = find_okta_processor_entries(content);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].organization.as_deref(), Some("my org.okta.com"));
+    }
+
+    #[test]
+    fn remove_managed_block_only_block() {
+        let block = build_managed_block("only", "/bin/awsenc", None);
+        let existing = format!("{block}\n");
+        let result = remove_managed_block(&existing, "only");
+        // Should be empty or just whitespace
+        assert!(
+            !result.contains("awsenc managed"),
+            "managed block should be removed"
+        );
+    }
+
+    #[test]
+    fn upsert_managed_block_no_trailing_newline() {
+        let existing = "[profile other]\nkey = value";
+        let block = build_managed_block("new", "/bin/awsenc", None);
+        let result = upsert_managed_block(existing, "new", &block);
+        assert!(result.contains("[profile other]"));
+        assert!(result.contains("[profile new]"));
+    }
+
+    #[test]
+    fn parse_okta_processor_line_equals_format() {
+        let entry = parse_okta_processor_line(
+            "test",
+            "aws-okta-processor authenticate --organization=org.okta.com --factor=push",
+        );
+        assert_eq!(entry.organization.as_deref(), Some("org.okta.com"));
+        assert_eq!(entry.factor.as_deref(), Some("push"));
+    }
 }

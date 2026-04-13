@@ -248,3 +248,267 @@ pub struct MigrateArgs {
     #[arg(long)]
     pub force: bool,
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn parse_auth_with_profile() {
+        let cli = Cli::parse_from(["awsenc", "auth", "my-profile"]);
+        match cli.command {
+            Commands::Auth(args) => {
+                assert_eq!(args.profile_positional.as_deref(), Some("my-profile"));
+            }
+            _ => panic!("expected Auth command"),
+        }
+    }
+
+    #[test]
+    fn parse_auth_with_all_flags() {
+        let cli = Cli::parse_from([
+            "awsenc",
+            "auth",
+            "--profile",
+            "prof",
+            "--user",
+            "user@example.com",
+            "--organization",
+            "org.okta.com",
+            "--application",
+            "https://org.okta.com/app",
+            "--role",
+            "arn:aws:iam::123:role/R",
+            "--factor",
+            "push",
+            "--duration",
+            "7200",
+            "--biometric",
+            "--no-open",
+            "--pass-stdin",
+        ]);
+        match cli.command {
+            Commands::Auth(args) => {
+                assert_eq!(args.profile_flag.as_deref(), Some("prof"));
+                assert_eq!(args.user.as_deref(), Some("user@example.com"));
+                assert_eq!(args.organization.as_deref(), Some("org.okta.com"));
+                assert!(args.biometric);
+                assert!(args.no_open);
+                assert!(args.pass_stdin);
+                assert_eq!(args.duration, Some(7200));
+            }
+            _ => panic!("expected Auth command"),
+        }
+    }
+
+    #[test]
+    fn parse_serve_with_profile() {
+        let cli = Cli::parse_from(["awsenc", "serve", "--profile", "prod"]);
+        match cli.command {
+            Commands::Serve(args) => {
+                assert_eq!(args.profile.as_deref(), Some("prod"));
+                assert!(!args.active);
+            }
+            _ => panic!("expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn parse_serve_active() {
+        let cli = Cli::parse_from(["awsenc", "serve", "--active"]);
+        match cli.command {
+            Commands::Serve(args) => {
+                assert!(args.active);
+                assert!(args.profile.is_none());
+            }
+            _ => panic!("expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn parse_exec_with_command() {
+        let cli = Cli::parse_from(["awsenc", "exec", "--", "aws", "s3", "ls"]);
+        match cli.command {
+            Commands::Exec(args) => {
+                assert_eq!(args.command, vec!["aws", "s3", "ls"]);
+                assert!(args.profile_positional.is_none());
+            }
+            _ => panic!("expected Exec command"),
+        }
+    }
+
+    #[test]
+    fn parse_exec_with_profile_and_command() {
+        let cli = Cli::parse_from(["awsenc", "exec", "prod", "--", "aws", "s3", "ls"]);
+        match cli.command {
+            Commands::Exec(args) => {
+                assert_eq!(args.profile_positional.as_deref(), Some("prod"));
+                assert_eq!(args.command, vec!["aws", "s3", "ls"]);
+            }
+            _ => panic!("expected Exec command"),
+        }
+    }
+
+    #[test]
+    fn parse_install_with_all_flags() {
+        let cli = Cli::parse_from([
+            "awsenc", "install", "myprofile", "--user", "u", "--organization", "o",
+            "--application", "a", "--role", "r", "--factor", "push", "--duration", "3600",
+            "--region", "us-west-2", "--biometric",
+        ]);
+        match cli.command {
+            Commands::Install(args) => {
+                assert_eq!(args.resolved_profile(), Some("myprofile"));
+                assert_eq!(args.user.as_deref(), Some("u"));
+                assert_eq!(args.region.as_deref(), Some("us-west-2"));
+                assert!(args.biometric);
+            }
+            _ => panic!("expected Install command"),
+        }
+    }
+
+    #[test]
+    fn parse_list_json() {
+        let cli = Cli::parse_from(["awsenc", "list", "--json"]);
+        match cli.command {
+            Commands::List(args) => {
+                assert!(args.json);
+                assert!(!args.all);
+            }
+            _ => panic!("expected List command"),
+        }
+    }
+
+    #[test]
+    fn parse_clear_all_force() {
+        let cli = Cli::parse_from(["awsenc", "clear", "--all", "--force"]);
+        match cli.command {
+            Commands::Clear(args) => {
+                assert!(args.all);
+                assert!(args.force);
+            }
+            _ => panic!("expected Clear command"),
+        }
+    }
+
+    #[test]
+    fn parse_clear_with_profile() {
+        let cli = Cli::parse_from(["awsenc", "clear", "my-profile"]);
+        match cli.command {
+            Commands::Clear(args) => {
+                assert_eq!(args.resolved_profile(), Some("my-profile"));
+            }
+            _ => panic!("expected Clear command"),
+        }
+    }
+
+    #[test]
+    fn parse_use_with_print_profile() {
+        let cli = Cli::parse_from(["awsenc", "use", "prod", "--print-profile"]);
+        match cli.command {
+            Commands::Use(args) => {
+                assert_eq!(args.profile.as_deref(), Some("prod"));
+                assert!(args.print_profile);
+            }
+            _ => panic!("expected Use command"),
+        }
+    }
+
+    #[test]
+    fn parse_shell_init_with_shell() {
+        let cli = Cli::parse_from(["awsenc", "shell-init", "zsh"]);
+        match cli.command {
+            Commands::ShellInit(args) => {
+                assert_eq!(args.shell.as_deref(), Some("zsh"));
+            }
+            _ => panic!("expected ShellInit command"),
+        }
+    }
+
+    #[test]
+    fn parse_migrate_dry_run() {
+        let cli = Cli::parse_from(["awsenc", "migrate", "--dry-run"]);
+        match cli.command {
+            Commands::Migrate(args) => {
+                assert!(args.dry_run);
+                assert!(!args.force);
+            }
+            _ => panic!("expected Migrate command"),
+        }
+    }
+
+    #[test]
+    fn parse_config_command() {
+        let cli = Cli::parse_from(["awsenc", "config"]);
+        assert!(matches!(cli.command, Commands::Config));
+    }
+
+    #[test]
+    fn parse_completions_bash() {
+        let cli = Cli::parse_from(["awsenc", "completions", "bash"]);
+        match cli.command {
+            Commands::Completions(args) => {
+                assert_eq!(args.shell, clap_complete::Shell::Bash);
+            }
+            _ => panic!("expected Completions command"),
+        }
+    }
+
+    #[test]
+    fn auth_args_resolved_profile_positional_priority() {
+        let args = AuthArgs {
+            profile_positional: Some("pos".to_string()),
+            profile_flag: Some("flag".to_string()),
+            user: None,
+            organization: None,
+            application: None,
+            role: None,
+            factor: None,
+            duration: None,
+            biometric: false,
+            no_open: false,
+            pass_stdin: false,
+        };
+        assert_eq!(args.resolved_profile(), Some("pos"));
+    }
+
+    #[test]
+    fn install_args_resolved_profile_flag() {
+        let args = InstallArgs {
+            profile_positional: None,
+            profile_flag: Some("flagged".to_string()),
+            user: None,
+            organization: None,
+            application: None,
+            role: None,
+            factor: None,
+            duration: None,
+            region: None,
+            biometric: false,
+        };
+        assert_eq!(args.resolved_profile(), Some("flagged"));
+    }
+
+    #[test]
+    fn clear_args_resolved_profile_positional() {
+        let args = ClearArgs {
+            profile_positional: Some("pos".to_string()),
+            profile_flag: Some("flag".to_string()),
+            all: false,
+            force: false,
+        };
+        assert_eq!(args.resolved_profile(), Some("pos"));
+    }
+
+    #[test]
+    fn exec_args_resolved_profile_flag_priority() {
+        let args = ExecArgs {
+            profile_positional: None,
+            profile_flag: Some("flagged".to_string()),
+            command: vec!["echo".to_string()],
+        };
+        assert_eq!(args.resolved_profile(), Some("flagged"));
+    }
+}
