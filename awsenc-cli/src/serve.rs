@@ -7,7 +7,7 @@ use awsenc_core::config::{self, ConfigOverrides};
 use awsenc_core::credential::{AwsCredentials, CredentialProcessOutput, CredentialState};
 use awsenc_core::okta::{OktaClient, OktaSession};
 use awsenc_core::sts::{self, StsClient};
-use awsenc_secure_storage::SecureStorage;
+use enclaveapp_app_storage::EncryptionStorage;
 
 use crate::cli::ServeArgs;
 use crate::usage;
@@ -19,7 +19,7 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 /// Outputs JSON to stdout. Never prompts for input. Never prints anything to
 /// stdout except the credential JSON.
 #[allow(clippy::print_stderr)]
-pub async fn run_serve(args: &ServeArgs, storage: &dyn SecureStorage) -> Result<()> {
+pub async fn run_serve(args: &ServeArgs, storage: &dyn EncryptionStorage) -> Result<()> {
     let profile = resolve_serve_profile(args)?;
 
     let Some(cache) = cache::read_cache(&profile)? else {
@@ -102,7 +102,7 @@ fn resolve_serve_profile(args: &ServeArgs) -> Result<String> {
 }
 
 fn decrypt_aws_credentials(
-    storage: &dyn SecureStorage,
+    storage: &dyn EncryptionStorage,
     ciphertext: &[u8],
 ) -> Result<AwsCredentials> {
     let plaintext = storage
@@ -124,7 +124,7 @@ fn output_credentials(creds: &AwsCredentials) {
 #[allow(clippy::cast_sign_loss)]
 async fn try_transparent_reauth(
     profile: &str,
-    storage: &dyn SecureStorage,
+    storage: &dyn EncryptionStorage,
     cache: &CacheFile,
 ) -> Result<AwsCredentials> {
     let okta_ct = cache
@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn decrypt_aws_credentials_success() {
-        use awsenc_secure_storage::mock::MockStorage;
+        use enclaveapp_app_storage::mock::MockEncryptionStorage as MockStorage;
         use zeroize::Zeroizing;
 
         let storage = MockStorage::new();
@@ -275,7 +275,7 @@ mod tests {
 
     #[test]
     fn decrypt_aws_credentials_bad_ciphertext() {
-        use awsenc_secure_storage::mock::MockStorage;
+        use enclaveapp_app_storage::mock::MockEncryptionStorage as MockStorage;
 
         let storage = MockStorage::new();
         let result = decrypt_aws_credentials(&storage, &[0xFF; 50]);

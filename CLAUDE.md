@@ -12,20 +12,17 @@ Rust workspace. Requires Rust 1.75+. macOS builds need Xcode (for swiftc via lib
 
 ```bash
 cargo build --workspace
-cargo test --workspace --features awsenc-secure-storage/mock
-cargo clippy --workspace --all-targets --features awsenc-secure-storage/mock -- -D warnings
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
-The `mock` feature on `awsenc-secure-storage` replaces the hardware backend with a test mock. Required for tests on any platform.
-
 ## Architecture
 
-Rust workspace with 4 crates:
+Rust workspace with 3 crates:
 
 - **awsenc-core** -- Okta SAML authentication, STS AssumeRoleWithSAML, credential caching (binary format with encrypted payloads), config management, MFA support (push/TOTP/YubiKey).
-- **awsenc-secure-storage** -- Platform abstraction for encrypt/decrypt. macOS uses `enclaveapp-apple` (CryptoKit ECIES), Windows uses `enclaveapp-windows` (CNG ECIES), WSL uses `enclaveapp-bridge`, Linux uses software AES fallback.
-- **awsenc-cli** -- Main CLI binary. Commands: auth, serve, exec, install, uninstall, list, clear, shell-init, config.
+- **awsenc-cli** -- Main CLI binary. Commands: auth, serve, exec, install, uninstall, list, clear, shell-init, config. Uses `enclaveapp-app-storage` for platform-detected hardware-backed encrypt/decrypt.
 - **awsenc-tpm-bridge** -- Windows TPM bridge for WSL (JSON-RPC over stdin/stdout).
 
 ### Key Flow
@@ -36,7 +33,9 @@ Rust workspace with 4 crates:
 
 ### Dependencies
 
-Uses `libenclaveapp` (path dependency at `../libenclaveapp/`) for all hardware-backed cryptography. The `enclaveapp-wsl` crate provides WSL shell integration.
+Uses `libenclaveapp` (path dependency at `../`) for all hardware-backed cryptography:
+- `enclaveapp-app-storage` -- Shared platform detection, key initialization, encrypt/decrypt (replaces the old `awsenc-secure-storage` crate)
+- `enclaveapp-wsl` -- WSL shell integration
 
 ## Platform
 
