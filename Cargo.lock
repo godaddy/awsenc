@@ -205,6 +205,7 @@ dependencies = [
  "enclaveapp-bridge",
  "enclaveapp-core",
  "enclaveapp-software",
+ "enclaveapp-windows",
  "enclaveapp-wsl",
  "rand 0.8.5",
  "serde",

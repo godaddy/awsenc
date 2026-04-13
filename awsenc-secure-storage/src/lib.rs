@@ -42,6 +42,8 @@ mod linux;
 mod macos;
 #[cfg(feature = "mock")]
 pub mod mock;
+#[cfg(target_os = "windows")]
+mod windows;
 #[cfg(target_os = "linux")]
 mod wsl;
 
@@ -71,8 +73,8 @@ pub fn create_platform_storage(biometric: bool) -> Result<Box<dyn SecureStorage>
 
     #[cfg(target_os = "windows")]
     {
-        let _ = biometric;
-        Err(StorageError::NotAvailable)
+        let storage = windows::WindowsTpmStorage::new(biometric)?;
+        Ok(Box::new(storage))
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
