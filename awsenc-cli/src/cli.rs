@@ -1,7 +1,11 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "awsenc", about = "Hardware-backed AWS credential manager")]
+#[command(
+    name = "awsenc",
+    version,
+    about = "Hardware-backed AWS credential manager"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
