@@ -381,8 +381,14 @@ mod tests {
         let exp =
             Some(chrono::Utc::now() + chrono::Duration::hours(2) + chrono::Duration::minutes(30));
         let result = format_expires(exp);
-        assert!(result.contains("h"), "expected hours notation, got: {result}");
-        assert!(result.contains("m"), "expected minutes notation, got: {result}");
+        assert!(
+            result.contains("h"),
+            "expected hours notation, got: {result}"
+        );
+        assert!(
+            result.contains("m"),
+            "expected minutes notation, got: {result}"
+        );
     }
 
     #[test]

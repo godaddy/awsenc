@@ -254,7 +254,10 @@ mod tests {
         cache::write_cache(profile, &cache_file).unwrap();
 
         let result = get_cached_credentials(profile, &storage).unwrap();
-        assert!(result.is_none(), "should return None for expired credentials");
+        assert!(
+            result.is_none(),
+            "should return None for expired credentials"
+        );
 
         drop(cache::delete_cache(profile));
         restore_home(prev);

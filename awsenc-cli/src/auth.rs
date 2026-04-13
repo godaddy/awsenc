@@ -259,10 +259,7 @@ mod tests {
             overrides.application.as_deref(),
             Some("https://myorg.okta.com/app")
         );
-        assert_eq!(
-            overrides.role.as_deref(),
-            Some("arn:aws:iam::123:role/R")
-        );
+        assert_eq!(overrides.role.as_deref(), Some("arn:aws:iam::123:role/R"));
         assert_eq!(overrides.factor.as_deref(), Some("push"));
         assert_eq!(overrides.duration, Some(7200));
         assert_eq!(overrides.biometric, Some(true));

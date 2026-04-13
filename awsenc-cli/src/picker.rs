@@ -245,7 +245,9 @@ mod tests {
             name: "test".into(),
             has_config: true,
             cache_state: Some(CredentialState::Fresh),
-            expiration: Some(Utc::now() + chrono::Duration::hours(2) + chrono::Duration::minutes(30)),
+            expiration: Some(
+                Utc::now() + chrono::Duration::hours(2) + chrono::Duration::minutes(30),
+            ),
             okta_session_expiration: None,
         };
         let status = format_status(&info);

@@ -354,9 +354,24 @@ mod tests {
     #[test]
     fn parse_install_with_all_flags() {
         let cli = Cli::parse_from([
-            "awsenc", "install", "myprofile", "--user", "u", "--organization", "o",
-            "--application", "a", "--role", "r", "--factor", "push", "--duration", "3600",
-            "--region", "us-west-2", "--biometric",
+            "awsenc",
+            "install",
+            "myprofile",
+            "--user",
+            "u",
+            "--organization",
+            "o",
+            "--application",
+            "a",
+            "--role",
+            "r",
+            "--factor",
+            "push",
+            "--duration",
+            "3600",
+            "--region",
+            "us-west-2",
+            "--biometric",
         ]);
         match cli.command {
             Commands::Install(args) => {
