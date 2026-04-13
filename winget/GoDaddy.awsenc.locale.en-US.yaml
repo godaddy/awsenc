@@ -1,8 +1,8 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
-PackageIdentifier: JGowdy.awsenc
+PackageIdentifier: GoDaddy.awsenc
 PackageVersion: 0.1.0
 PackageLocale: en-US
-Publisher: Jay Gowdy
+Publisher: GoDaddy
 PublisherUrl: https://github.com/godaddy
 PackageName: awsenc
 PackageUrl: https://github.com/godaddy/awsenc
