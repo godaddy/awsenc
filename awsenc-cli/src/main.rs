@@ -7,7 +7,9 @@ use awsenc_core::cache;
 use awsenc_core::config::{self, ConfigOverrides};
 use awsenc_core::credential::CredentialState;
 use awsenc_core::profile;
-use awsenc_secure_storage::create_platform_storage;
+use enclaveapp_app_storage::{
+    create_encryption_storage, AccessPolicy, EncryptionStorage, StorageConfig,
+};
 
 mod auth;
 mod cli;
@@ -48,23 +50,20 @@ async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let profile = config::resolve_alias(&profile, &global);
 
             let biometric = resolve_biometric_for_profile(&profile, args.biometric);
-            let storage = create_platform_storage(biometric)
-                .map_err(|e| format!("failed to initialize secure storage: {e}"))?;
+            let storage = create_storage(biometric)?;
 
             auth::run_auth(&profile, &args, &*storage).await
         }
 
         Commands::Serve(args) => {
             let biometric = resolve_biometric_from_serve(&args);
-            let storage = create_platform_storage(biometric)
-                .map_err(|e| format!("failed to initialize secure storage: {e}"))?;
+            let storage = create_storage(biometric)?;
             serve::run_serve(&args, &*storage).await
         }
 
         Commands::Exec(args) => {
             let biometric = resolve_biometric_from_exec(&args);
-            let storage = create_platform_storage(biometric)
-                .map_err(|e| format!("failed to initialize secure storage: {e}"))?;
+            let storage = create_storage(biometric)?;
             exec::run_exec(&args, &*storage).await
         }
 
@@ -122,6 +121,24 @@ fn resolve_interactive_profile(
     }
 
     Err("no profile specified and stdin is not a TTY for interactive selection".into())
+}
+
+fn create_storage(
+    biometric: bool,
+) -> Result<Box<dyn EncryptionStorage>, Box<dyn std::error::Error>> {
+    let policy = if biometric {
+        AccessPolicy::BiometricOnly
+    } else {
+        AccessPolicy::None
+    };
+    create_encryption_storage(StorageConfig {
+        app_name: "awsenc".into(),
+        key_label: "cache-key".into(),
+        access_policy: policy,
+        extra_bridge_paths: vec![],
+        keys_dir: None,
+    })
+    .map_err(|e| format!("failed to initialize secure storage: {e}").into())
 }
 
 fn resolve_biometric_for_profile(profile: &str, cli_biometric: bool) -> bool {

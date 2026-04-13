@@ -11,7 +11,7 @@ use awsenc_core::config::{self, ConfigOverrides};
 use awsenc_core::mfa::{self, MfaFactor};
 use awsenc_core::okta::{AuthnResponse, OktaClient, OktaSession};
 use awsenc_core::sts::{self, StsClient};
-use awsenc_secure_storage::SecureStorage;
+use enclaveapp_app_storage::EncryptionStorage;
 
 use crate::cli::AuthArgs;
 use crate::usage;
@@ -20,7 +20,11 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 /// Run the interactive authentication flow.
 #[allow(clippy::print_stderr)]
-pub async fn run_auth(profile: &str, args: &AuthArgs, storage: &dyn SecureStorage) -> Result<()> {
+pub async fn run_auth(
+    profile: &str,
+    args: &AuthArgs,
+    storage: &dyn EncryptionStorage,
+) -> Result<()> {
     let global = config::load_global_config()?;
     let Ok(profile_config) = config::load_profile_config(profile) else {
         return Err(format!(
@@ -135,7 +139,7 @@ async fn obtain_credentials(
 #[allow(clippy::cast_sign_loss)]
 fn encrypt_and_cache(
     profile: &str,
-    storage: &dyn SecureStorage,
+    storage: &dyn EncryptionStorage,
     creds: &awsenc_core::credential::AwsCredentials,
     session_token: &Zeroizing<String>,
 ) -> Result<()> {
@@ -277,7 +281,7 @@ mod tests {
 
     #[test]
     fn encrypt_and_cache_builds_correct_format() {
-        use awsenc_secure_storage::mock::MockStorage;
+        use enclaveapp_app_storage::mock::MockEncryptionStorage as MockStorage;
 
         let storage = MockStorage::new();
         let creds = awsenc_core::credential::AwsCredentials {

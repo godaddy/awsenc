@@ -1,7 +1,6 @@
 [workspace]
 members = [
     "awsenc-core",
-    "awsenc-secure-storage",
     "awsenc-cli",
     "awsenc-tpm-bridge",
 ]
@@ -50,6 +49,7 @@ enclaveapp-bridge = { path = "../crates/enclaveapp-bridge" }
 enclaveapp-wsl = { path = "../crates/enclaveapp-wsl" }
 enclaveapp-software = { path = "../crates/enclaveapp-software", features = ["encryption", "keyring-storage"] }
 enclaveapp-test-support = { path = "../crates/enclaveapp-test-support" }
+enclaveapp-app-storage = { path = "../crates/enclaveapp-app-storage" }
 
 [workspace.lints.clippy]
 default_union_representation = "deny"

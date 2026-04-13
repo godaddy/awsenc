@@ -81,13 +81,9 @@ awsenc/
       mfa.rs                    # MFA factor handling
       profile.rs                # AWS profile management
 
-  awsenc-secure-storage/        # Hardware encryption abstraction
-    src/
-      lib.rs                    # SecureStorage trait
-      macos.rs                  # Secure Enclave via enclaveapp-apple
-      windows.rs                # TPM 2.0 via enclaveapp-windows
-      wsl.rs                    # TPM bridge client via enclaveapp-bridge
-      linux.rs                  # Software fallback
+  # NOTE: awsenc-secure-storage was replaced by enclaveapp-app-storage
+  # (shared crate in libenclaveapp). See enclaveapp-app-storage for the
+  # platform detection, key init, and encrypt/decrypt implementation.
 
   awsenc-cli/                   # Main CLI binary
     src/
@@ -111,16 +107,16 @@ awsenc/
 | Crate | Role |
 |-------|------|
 | `awsenc-core` | Config, cache, Okta auth, STS, credential types |
-| `awsenc-secure-storage` | `SecureStorage` trait + platform dispatch (delegates to libenclaveapp) |
 | `awsenc-cli` | CLI binary, credential_process handler, interactive picker |
 | `awsenc-tpm-bridge` | WSL-to-Windows TPM bridge (uses enclaveapp-bridge) |
 
 ### libenclaveapp Dependency
 
-All platform-specific crypto is delegated to libenclaveapp's `encryption`
-feature. awsenc-secure-storage wraps libenclaveapp's `EnclaveEncryptor`
-trait into awsenc's `SecureStorage` trait. The former `awsenc-ffi-apple`
-crate (direct CryptoKit bridge) has been removed.
+All platform-specific crypto is delegated to libenclaveapp. The `awsenc-cli`
+crate uses `enclaveapp-app-storage` (shared crate) for platform-detected
+hardware-backed encrypt/decrypt via the `EncryptionStorage` trait. The old
+`awsenc-secure-storage` crate has been removed — its functionality is now
+in `enclaveapp-app-storage`.
 
 ---
 

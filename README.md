@@ -247,8 +247,8 @@ See [DESIGN.md](DESIGN.md) for the full security model and threat analysis.
 ## Development
 
 ```sh
-cargo test --workspace --features awsenc-secure-storage/mock
-cargo clippy --workspace --features awsenc-secure-storage/mock --tests -- -D warnings
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 

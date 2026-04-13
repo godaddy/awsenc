@@ -7,7 +7,7 @@ use awsenc_core::cache;
 use awsenc_core::config::{self, ConfigOverrides};
 use awsenc_core::credential::{AwsCredentials, CredentialState};
 use awsenc_core::profile;
-use awsenc_secure_storage::SecureStorage;
+use enclaveapp_app_storage::EncryptionStorage;
 
 use crate::cli::{AuthArgs, ExecArgs};
 use crate::usage;
@@ -16,7 +16,7 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 /// Run a child process with AWS credentials injected into its environment.
 #[allow(clippy::exit, clippy::print_stderr)]
-pub async fn run_exec(args: &ExecArgs, storage: &dyn SecureStorage) -> Result<()> {
+pub async fn run_exec(args: &ExecArgs, storage: &dyn EncryptionStorage) -> Result<()> {
     if args.command.is_empty() {
         return Err(
             "no command specified; usage: awsenc exec [PROFILE] -- <COMMAND> [ARGS...]".into(),
@@ -104,7 +104,7 @@ fn resolve_exec_profile(args: &ExecArgs) -> Result<String> {
 
 fn get_cached_credentials(
     profile: &str,
-    storage: &dyn SecureStorage,
+    storage: &dyn EncryptionStorage,
 ) -> Result<Option<AwsCredentials>> {
     let Some(cache) = cache::read_cache(profile)? else {
         return Ok(None);
@@ -141,7 +141,7 @@ fn get_profile_region(profile: &str) -> Option<String> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use awsenc_secure_storage::mock::MockStorage;
+    use enclaveapp_app_storage::mock::MockEncryptionStorage as MockStorage;
 
     // Mutex to serialize tests that modify the HOME env var
     static HOME_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
