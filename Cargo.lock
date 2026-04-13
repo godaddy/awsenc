@@ -150,7 +150,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "awsenc-cli"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "assert_cmd",
  "awsenc-core",
@@ -175,7 +175,7 @@ dependencies = [
 
 [[package]]
 name = "awsenc-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "base64",
  "chrono",
@@ -196,7 +196,7 @@ dependencies = [
 
 [[package]]
 name = "awsenc-secure-storage"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -217,7 +217,7 @@ dependencies = [
 
 [[package]]
 name = "awsenc-tpm-bridge"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "base64",
  "enclaveapp-bridge",

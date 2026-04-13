@@ -43,13 +43,13 @@ unused_macro_rules = "warn"
 variant_size_differences = "warn"
 
 [workspace.dependencies]
-enclaveapp-core = { path = "../libenclaveapp/crates/enclaveapp-core" }
-enclaveapp-apple = { path = "../libenclaveapp/crates/enclaveapp-apple" }
-enclaveapp-windows = { path = "../libenclaveapp/crates/enclaveapp-windows" }
-enclaveapp-bridge = { path = "../libenclaveapp/crates/enclaveapp-bridge" }
-enclaveapp-wsl = { path = "../libenclaveapp/crates/enclaveapp-wsl" }
-enclaveapp-software = { path = "../libenclaveapp/crates/enclaveapp-software", features = ["encryption", "keyring-storage"] }
-enclaveapp-test-support = { path = "../libenclaveapp/crates/enclaveapp-test-support" }
+enclaveapp-core = { path = "../crates/enclaveapp-core" }
+enclaveapp-apple = { path = "../crates/enclaveapp-apple" }
+enclaveapp-windows = { path = "../crates/enclaveapp-windows" }
+enclaveapp-bridge = { path = "../crates/enclaveapp-bridge" }
+enclaveapp-wsl = { path = "../crates/enclaveapp-wsl" }
+enclaveapp-software = { path = "../crates/enclaveapp-software", features = ["encryption", "keyring-storage"] }
+enclaveapp-test-support = { path = "../crates/enclaveapp-test-support" }
 
 [workspace.lints.clippy]
 default_union_representation = "deny"
