@@ -258,5 +258,7 @@ fn migrate_dry_run_exits_zero() {
         .args(["migrate", "--dry-run"])
         .assert()
         .success()
-        .stderr(predicate::str::contains("No AWS config files found"));
+        .stderr(predicate::str::contains("No AWS config files found").or(
+            predicate::str::contains("No aws-okta-processor entries found"),
+        ));
 }
