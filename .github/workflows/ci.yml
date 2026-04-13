@@ -7,7 +7,7 @@ on:
 
 jobs:
   ci:
-    uses: jgowdy/libenclaveapp/.github/workflows/reusable-ci.yml@main
+    uses: godaddy/libenclaveapp/.github/workflows/reusable-ci.yml@main
     with:
       platforms: '["macos-latest", "ubuntu-latest", "windows-latest"]'
       cargo_args: "--features awsenc-secure-storage/mock"

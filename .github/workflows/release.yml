@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   release:
-    uses: jgowdy/libenclaveapp/.github/workflows/reusable-release.yml@main
+    uses: godaddy/libenclaveapp/.github/workflows/reusable-release.yml@main
     with:
       app_name: awsenc
       targets: '["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu", "aarch64-pc-windows-msvc", "x86_64-unknown-linux-musl"]'
@@ -18,8 +18,8 @@ jobs:
       windows_binaries: "awsenc.exe awsenc-tpm-bridge.exe"
       wix_file: "installer/awsenc.wxs"
       cargo_build_args: "--features awsenc-secure-storage/mock"
-      homebrew: '{"tap_repo":"jgowdy/homebrew-awsenc","formula_class":"Awsenc","description":"Hardware-backed AWS credential manager using Secure Enclave / TPM"}'
-      scoop: '{"bucket_repo":"jgowdy/scoop-awsenc","description":"Hardware-backed AWS credential manager (Windows TPM 2.0)","has_winget":true}'
+      homebrew: '{"tap_repo":"godaddy/homebrew-awsenc","formula_class":"Awsenc","description":"Hardware-backed AWS credential manager using Secure Enclave / TPM"}'
+      scoop: '{"bucket_repo":"godaddy/scoop-awsenc","description":"Hardware-backed AWS credential manager (Windows TPM 2.0)","has_winget":true}'
     secrets:
       HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
       SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}

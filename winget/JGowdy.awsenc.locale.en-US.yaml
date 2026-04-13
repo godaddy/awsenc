@@ -3,11 +3,11 @@ PackageIdentifier: JGowdy.awsenc
 PackageVersion: 0.1.0
 PackageLocale: en-US
 Publisher: Jay Gowdy
-PublisherUrl: https://github.com/jgowdy
+PublisherUrl: https://github.com/godaddy
 PackageName: awsenc
-PackageUrl: https://github.com/jgowdy/awsenc
+PackageUrl: https://github.com/godaddy/awsenc
 License: MIT
-LicenseUrl: https://github.com/jgowdy/awsenc/blob/main/LICENSE
+LicenseUrl: https://github.com/godaddy/awsenc/blob/main/LICENSE
 ShortDescription: Hardware-backed AWS credential manager using Windows TPM 2.0
 Description: |-
   awsenc encrypts AWS session credentials at rest using the Secure Enclave (macOS) or
@@ -22,6 +22,6 @@ Tags:
   - credentials
   - encryption
   - secure-enclave
-ReleaseNotesUrl: https://github.com/jgowdy/awsenc/releases/tag/v0.1.0
+ReleaseNotesUrl: https://github.com/godaddy/awsenc/releases/tag/v0.1.0
 ManifestType: defaultLocale
 ManifestVersion: 1.6.0

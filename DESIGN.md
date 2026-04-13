@@ -65,7 +65,7 @@ The AWS CLI never sees a file or environment variable -- it calls `awsenc serve`
 ## Workspace Structure
 
 4-crate workspace plus shared dependencies from
-[libenclaveapp](https://github.com/jgowdy/libenclaveapp):
+[libenclaveapp](https://github.com/godaddy/libenclaveapp):
 
 ```
 awsenc/
@@ -769,7 +769,7 @@ clean:      cargo clean
 | Channel | Format |
 |---------|--------|
 | GitHub Releases | tar.gz (Unix), zip + MSI (Windows) |
-| Homebrew | Tap formula (`brew install jgowdy/tap/awsenc`) |
+| Homebrew | Tap formula (`brew install godaddy/tap/awsenc`) |
 | Scoop | Bucket manifest (Windows) |
 
 The Windows MSI installs both `awsenc.exe` and `awsenc-tpm-bridge.exe`, and optionally installs the Linux binary into detected WSL distros.

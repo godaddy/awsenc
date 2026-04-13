@@ -14,7 +14,7 @@ Commands:
   - awsenc-tpm-bridge
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/jgowdy/awsenc/releases/download/v0.1.0/awsenc-x86_64-pc-windows-msvc.msi
+    InstallerUrl: https://github.com/godaddy/awsenc/releases/download/v0.1.0/awsenc-x86_64-pc-windows-msvc.msi
     InstallerSha256: PLACEHOLDER
 ManifestType: installer
 ManifestVersion: 1.6.0

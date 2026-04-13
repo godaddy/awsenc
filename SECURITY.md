@@ -7,7 +7,7 @@ If you discover a security vulnerability in awsenc, report it privately.
 **Do not open a public GitHub issue for security vulnerabilities.**
 
 Email: Report via GitHub's private vulnerability reporting feature on the
-[awsenc repository](https://github.com/jgowdy/awsenc/security/advisories/new),
+[awsenc repository](https://github.com/godaddy/awsenc/security/advisories/new),
 or contact the maintainer directly.
 
 Include:

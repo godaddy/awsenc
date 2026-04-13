@@ -4,29 +4,29 @@ Hardware-backed AWS credential manager. Encrypts AWS session credentials at rest
 
 Replaces [aws-okta-processor](https://github.com/godaddy/aws-okta-processor) with a single static binary. No Python runtime required.
 
-Part of the same family as [sshenc](https://github.com/jgowdy/sshenc) (SSH keys).
+Part of the same family as [sshenc](https://github.com/godaddy/sshenc) (SSH keys).
 
 ## Install
 
-**[Download latest release](https://github.com/jgowdy/awsenc/releases/latest)** -- pre-built binaries for macOS, Windows, and Linux.
+**[Download latest release](https://github.com/godaddy/awsenc/releases/latest)** -- pre-built binaries for macOS, Windows, and Linux.
 
 ### Homebrew (macOS)
 
 ```sh
-brew tap jgowdy/awsenc
+brew tap godaddy/awsenc
 brew install awsenc
 ```
 
 ### Windows -- MSI installer
 
 Download `awsenc-x86_64-pc-windows-msvc.msi` from the
-[latest release](https://github.com/jgowdy/awsenc/releases). Double-click
+[latest release](https://github.com/godaddy/awsenc/releases). Double-click
 to install.
 
 ### Windows -- Scoop
 
 ```powershell
-scoop bucket add awsenc https://github.com/jgowdy/scoop-awsenc
+scoop bucket add awsenc https://github.com/godaddy/scoop-awsenc
 scoop install awsenc
 ```
 
@@ -40,7 +40,7 @@ sudo cp awsenc awsenc-tpm-bridge /usr/local/bin/
 ### From source
 
 ```sh
-git clone https://github.com/jgowdy/awsenc.git
+git clone https://github.com/godaddy/awsenc.git
 cd awsenc
 make build
 make install        # installs to /usr/local/bin
@@ -191,7 +191,7 @@ Credentials are encrypted using **ECIES** (P-256, X9.63 KDF, AES-GCM) with a har
 | Linux (no TPM) | Software fallback | File-based AES-GCM (one-time warning) |
 
 All platform-specific crypto is provided by
-[libenclaveapp](https://github.com/jgowdy/libenclaveapp).
+[libenclaveapp](https://github.com/godaddy/libenclaveapp).
 
 ## Configuration
 
