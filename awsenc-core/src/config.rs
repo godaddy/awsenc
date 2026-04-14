@@ -48,6 +48,8 @@ pub struct CacheConfig {
 pub struct ProfileConfig {
     #[serde(default)]
     pub okta: ProfileOktaConfig,
+    #[serde(default)]
+    pub security: ProfileSecurityConfig,
     pub region: Option<String>,
     pub secondary_role: Option<SecondaryRoleConfig>,
 }
@@ -55,10 +57,16 @@ pub struct ProfileConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProfileOktaConfig {
     pub organization: Option<String>,
+    pub user: Option<String>,
     pub application: Option<String>,
     pub role: Option<String>,
     pub factor: Option<String>,
     pub duration: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ProfileSecurityConfig {
+    pub biometric: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -271,6 +279,7 @@ pub fn resolve_config(
     let okta_user = overrides
         .user
         .clone()
+        .or_else(|| profile.okta.user.clone())
         .or_else(|| global.okta.user.clone())
         .ok_or_else(|| Error::MissingConfig("okta user".into()))?;
 
@@ -298,6 +307,7 @@ pub fn resolve_config(
 
     let biometric = overrides
         .biometric
+        .or(profile.security.biometric)
         .or(global.security.biometric)
         .unwrap_or(false);
 
@@ -392,10 +402,14 @@ mod tests {
         let profile = ProfileConfig {
             okta: ProfileOktaConfig {
                 organization: None,
+                user: Some("profile-user".into()),
                 application: Some("https://global-org.okta.com/home/amazon_aws/0oa123/272".into()),
                 role: Some("arn:aws:iam::123456789012:role/MyRole".into()),
                 factor: Some("yubikey".into()),
                 duration: Some(7200),
+            },
+            security: ProfileSecurityConfig {
+                biometric: Some(false),
             },
             region: Some("us-west-2".into()),
             secondary_role: None,
@@ -405,11 +419,11 @@ mod tests {
 
         let resolved = resolve_config("test", &global, &profile, &overrides).unwrap();
         assert_eq!(resolved.okta_organization, "global-org.okta.com");
-        assert_eq!(resolved.okta_user, "globaluser");
+        assert_eq!(resolved.okta_user, "profile-user");
         assert_eq!(resolved.okta_factor, "yubikey"); // profile overrides global
         assert_eq!(resolved.okta_duration, 7200);
         assert_eq!(resolved.region.as_deref(), Some("us-west-2"));
-        assert!(resolved.biometric);
+        assert!(!resolved.biometric);
         assert_eq!(resolved.refresh_window_seconds, 300);
     }
 
@@ -427,11 +441,13 @@ mod tests {
         let profile = ProfileConfig {
             okta: ProfileOktaConfig {
                 organization: None,
+                user: None,
                 application: Some("https://global-org.okta.com/app".into()),
                 role: Some("arn:aws:iam::123:role/R".into()),
                 factor: Some("yubikey".into()),
                 duration: None,
             },
+            security: ProfileSecurityConfig::default(),
             region: None,
             secondary_role: None,
         };
@@ -472,11 +488,13 @@ mod tests {
         let profile = ProfileConfig {
             okta: ProfileOktaConfig {
                 organization: None,
+                user: None,
                 application: Some("https://evil.example.com/home/app".into()),
                 role: Some("arn:aws:iam::123:role/R".into()),
                 factor: None,
                 duration: None,
             },
+            security: ProfileSecurityConfig::default(),
             ..Default::default()
         };
 
@@ -500,11 +518,13 @@ mod tests {
         let profile = ProfileConfig {
             okta: ProfileOktaConfig {
                 organization: None,
+                user: None,
                 application: Some("http://global-org.okta.com/home/app".into()),
                 role: Some("arn:aws:iam::123:role/R".into()),
                 factor: None,
                 duration: None,
             },
+            security: ProfileSecurityConfig::default(),
             ..Default::default()
         };
 
@@ -526,11 +546,13 @@ mod tests {
         let profile = ProfileConfig {
             okta: ProfileOktaConfig {
                 organization: None,
+                user: None,
                 application: Some("https://global-org.okta.com/home/app".into()),
                 role: Some("arn:aws:iam::123:role/R".into()),
                 factor: None,
                 duration: None,
             },
+            security: ProfileSecurityConfig::default(),
             ..Default::default()
         };
 
@@ -560,10 +582,14 @@ mod tests {
         let config = ProfileConfig {
             okta: ProfileOktaConfig {
                 organization: None,
+                user: Some("jane".into()),
                 application: Some("https://org.okta.com/app".into()),
                 role: Some("arn:aws:iam::123:role/R".into()),
                 factor: None,
                 duration: Some(3600),
+            },
+            security: ProfileSecurityConfig {
+                biometric: Some(true),
             },
             region: Some("us-east-1".into()),
             secondary_role: Some(SecondaryRoleConfig {
@@ -577,6 +603,8 @@ mod tests {
             parsed.okta.application.as_deref(),
             Some("https://org.okta.com/app")
         );
+        assert_eq!(parsed.okta.user.as_deref(), Some("jane"));
+        assert_eq!(parsed.security.biometric, Some(true));
         assert_eq!(parsed.region.as_deref(), Some("us-east-1"));
         assert_eq!(
             parsed

@@ -113,7 +113,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
-    use crate::config::{ProfileConfig, ProfileOktaConfig};
+    use crate::config::{ProfileConfig, ProfileOktaConfig, ProfileSecurityConfig};
 
     #[test]
     fn profile_exists_returns_false_for_missing() {
@@ -161,11 +161,13 @@ mod tests {
         let config = ProfileConfig {
             okta: ProfileOktaConfig {
                 organization: None,
+                user: None,
                 application: Some("https://org.okta.com/app".into()),
                 role: Some("arn:aws:iam::123:role/R".into()),
                 factor: None,
                 duration: None,
             },
+            security: ProfileSecurityConfig::default(),
             region: Some("us-west-1".into()),
             secondary_role: None,
         };

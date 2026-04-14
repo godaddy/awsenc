@@ -4,7 +4,8 @@ use std::fs;
 
 use awsenc_core::cache::{CacheFile, CacheHeader, FLAG_HAS_OKTA_SESSION, FORMAT_VERSION, MAGIC};
 use awsenc_core::config::{
-    GlobalConfig, OktaConfig, ProfileConfig, ProfileOktaConfig, SecondaryRoleConfig,
+    GlobalConfig, OktaConfig, ProfileConfig, ProfileOktaConfig, ProfileSecurityConfig,
+    SecondaryRoleConfig,
 };
 
 // ===========================================================================
@@ -290,10 +291,14 @@ fn config_profile_save_load_roundtrip() {
     let config = ProfileConfig {
         okta: ProfileOktaConfig {
             organization: Some("custom-org.okta.com".into()),
+            user: Some("jane@example.com".into()),
             application: Some("https://custom-org.okta.com/home/amazon_aws/0oa123/272".into()),
             role: Some("arn:aws:iam::123456789012:role/Admin".into()),
             factor: Some("yubikey".into()),
             duration: Some(7200),
+        },
+        security: ProfileSecurityConfig {
+            biometric: Some(true),
         },
         region: Some("us-west-2".into()),
         secondary_role: Some(SecondaryRoleConfig {
@@ -311,6 +316,7 @@ fn config_profile_save_load_roundtrip() {
         loaded.okta.organization.as_deref(),
         Some("custom-org.okta.com")
     );
+    assert_eq!(loaded.okta.user.as_deref(), Some("jane@example.com"));
     assert_eq!(
         loaded.okta.application.as_deref(),
         Some("https://custom-org.okta.com/home/amazon_aws/0oa123/272")
@@ -321,6 +327,7 @@ fn config_profile_save_load_roundtrip() {
     );
     assert_eq!(loaded.okta.factor.as_deref(), Some("yubikey"));
     assert_eq!(loaded.okta.duration, Some(7200));
+    assert_eq!(loaded.security.biometric, Some(true));
     assert_eq!(loaded.region.as_deref(), Some("us-west-2"));
     assert_eq!(
         loaded
@@ -339,11 +346,13 @@ fn config_profile_minimal_roundtrip() {
     let config = ProfileConfig {
         okta: ProfileOktaConfig {
             organization: None,
+            user: None,
             application: Some("https://org.okta.com/app".into()),
             role: Some("arn:aws:iam::123:role/R".into()),
             factor: None,
             duration: None,
         },
+        security: ProfileSecurityConfig::default(),
         region: None,
         secondary_role: None,
     };
@@ -355,8 +364,10 @@ fn config_profile_minimal_roundtrip() {
     let loaded: ProfileConfig = toml::from_str(&contents).unwrap();
 
     assert!(loaded.okta.organization.is_none());
+    assert!(loaded.okta.user.is_none());
     assert!(loaded.okta.factor.is_none());
     assert!(loaded.okta.duration.is_none());
+    assert!(loaded.security.biometric.is_none());
     assert!(loaded.secondary_role.is_none());
     assert_eq!(
         loaded.okta.application.as_deref(),

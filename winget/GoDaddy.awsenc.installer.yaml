@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
 PackageIdentifier: GoDaddy.awsenc
-PackageVersion: 0.1.0
+PackageVersion: 0.4.5
 MinimumOSVersion: 10.0.17763.0
 InstallerType: wix
 Scope: user
@@ -14,7 +14,7 @@ Commands:
   - awsenc-tpm-bridge
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/godaddy/awsenc/releases/download/v0.1.0/awsenc-x86_64-pc-windows-msvc.msi
-    InstallerSha256: PLACEHOLDER
+    InstallerUrl: https://github.com/godaddy/awsenc/releases/download/v0.4.5/awsenc-x86_64-pc-windows-msvc.msi
+    InstallerSha256: 483A6D8202FC125AB5BCC7987C3AAFE14C7D6FD60082332F17DDA2E37922F22E
 ManifestType: installer
 ManifestVersion: 1.6.0

@@ -21,7 +21,8 @@ brew install awsenc
 
 Download `awsenc-x86_64-pc-windows-msvc.msi` from the
 [latest release](https://github.com/godaddy/awsenc/releases). Double-click
-to install.
+to install. The MSI adds `awsenc` to the user `PATH` and launches an
+interactive `awsenc install --wizard` setup flow after installation.
 
 ### Windows -- Scoop
 
@@ -162,11 +163,11 @@ awsenc serve
      |
      No
      |
-  Okta session cached? ─── Yes ──> Get SAML assertion ──> STS AssumeRole
-     |                                                          |
-     No                                                    Encrypt + cache
-     |                                                          |
-  Exit 1 (run `awsenc auth`)                              JSON to stdout
+  Credentials fresh? ─── Yes ──> Decrypt with Secure Enclave / TPM ──> JSON to stdout
+     |
+     No
+     |
+  Exit 1 (run `awsenc auth`)
 ```
 
 Credentials are encrypted using **ECIES** (P-256, X9.63 KDF, AES-GCM) with a hardware-bound key. The private key never leaves the Secure Enclave or TPM.
@@ -218,10 +219,16 @@ prod = "production-admin"
 ```toml
 [okta]
 organization = "mycompany.okta.com"
+user = "jdoe"
 application = "https://mycompany.okta.com/home/amazon_aws/0oa.../272"
 role = "arn:aws:iam::123456789012:role/MyRole"
 factor = "yubikey"
 duration = 3600
+
+[security]
+biometric = true
+
+region = "us-west-2"
 ```
 
 ## Migrating from aws-okta-processor
@@ -231,14 +238,14 @@ awsenc migrate --dry-run    # preview changes
 awsenc migrate              # convert all credential_process entries
 ```
 
-This scans `~/.aws/config` for `aws-okta-processor` entries, creates equivalent awsenc profiles, and updates the `credential_process` directives. Original entries are commented out, not deleted.
+This scans `~/.aws/config` for `aws-okta-processor` entries, creates equivalent awsenc profiles, comments out the original `credential_process` lines, and adds managed `awsenc` blocks. Profiles using `--secondary-role` are skipped with an explicit warning because chained role assumption is not supported yet.
 
 ## Security
 
 - Credentials encrypted at rest with hardware-bound ECIES keys
 - Private key never leaves Secure Enclave / TPM
 - No plaintext credentials on disk or in environment variables
-- `Zeroize`-on-drop for all in-memory credential buffers
+- `Zeroizing` wrappers for AWS credential buffers and best-effort minimization of secret copies during request handling
 - File permissions: 0700 dirs, 0600 files
 - `exec` mode isolates credentials to child process only
 

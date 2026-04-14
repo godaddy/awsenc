@@ -152,8 +152,11 @@ fn resolve_biometric_for_profile(profile: &str, cli_biometric: bool) -> bool {
     let Ok(profile_config) = config::load_profile_config(profile) else {
         return global.security.biometric.unwrap_or(false);
     };
-    let overrides = ConfigOverrides::from_env();
-    config::resolve_config(profile, &global, &profile_config, &overrides).is_ok_and(|c| c.biometric)
+    ConfigOverrides::from_env()
+        .biometric
+        .or(profile_config.security.biometric)
+        .or(global.security.biometric)
+        .unwrap_or(false)
 }
 
 fn resolve_biometric_from_serve(args: &cli::ServeArgs) -> bool {
@@ -510,11 +513,13 @@ mod tests {
         let profile = config::ProfileConfig {
             okta: config::ProfileOktaConfig {
                 organization: Some("org.okta.com".into()),
+                user: None,
                 application: Some("https://org.okta.com/app".into()),
                 role: Some("arn:aws:iam::123:role/R".into()),
                 factor: None,
                 duration: None,
             },
+            security: config::ProfileSecurityConfig::default(),
             region: None,
             secondary_role: None,
         };
