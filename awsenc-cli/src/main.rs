@@ -71,7 +71,7 @@ async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
 
         Commands::Use(args) => {
-            let profile = resolve_interactive_profile(args.profile.as_deref())?;
+            let profile = resolve_use_profile(args.profile.as_deref())?;
             let global = config::load_global_config().unwrap_or_default();
             let profile = config::resolve_alias(&profile, &global);
 
@@ -124,6 +124,39 @@ fn resolve_interactive_profile(
     }
 
     Err("no profile specified and stdin is not a TTY for interactive selection".into())
+}
+
+fn resolve_use_profile(explicit: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
+    match explicit {
+        Some(selector) => resolve_use_selector(selector),
+        None => resolve_interactive_profile(None),
+    }
+}
+
+fn resolve_use_selector(selector: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let Ok(rank) = selector.parse::<usize>() else {
+        return Ok(selector.to_owned());
+    };
+
+    if rank == 0 {
+        return Err("MRU rank must be 1 or greater".into());
+    }
+
+    let profiles = profile::list_profiles()?;
+    let known_profiles: std::collections::HashSet<_> = profiles
+        .iter()
+        .map(|profile| profile.name.as_str())
+        .collect();
+    let usage_data = usage::load_usage();
+    let mru_profiles: Vec<_> = usage::get_mru_profiles(&usage_data, profiles.len())
+        .into_iter()
+        .filter(|profile| known_profiles.contains(profile.as_str()))
+        .collect();
+
+    mru_profiles
+        .get(rank - 1)
+        .cloned()
+        .ok_or_else(|| format!("MRU rank {rank} is out of range").into())
 }
 
 fn create_storage(
@@ -415,6 +448,87 @@ mod tests {
     fn resolve_interactive_profile_explicit() {
         let result = resolve_interactive_profile(Some("myprofile")).unwrap();
         assert_eq!(result, "myprofile");
+    }
+
+    #[test]
+    fn resolve_use_selector_returns_literal_profile_name() {
+        let result = resolve_use_selector("myprofile").unwrap();
+        assert_eq!(result, "myprofile");
+    }
+
+    #[test]
+    fn resolve_use_selector_resolves_mru_rank() {
+        use chrono::{Duration, Utc};
+        use std::collections::HashMap;
+
+        let _lock = TEST_ENV_MUTEX.lock().expect("mutex poisoned");
+        let tmp = tempfile::tempdir().unwrap();
+        let (prev_home, prev_userprofile, prev_xdg) = set_test_home(tmp.path());
+
+        let prod = config::ProfileConfig {
+            okta: config::ProfileOktaConfig {
+                organization: Some("org.okta.com".into()),
+                user: Some("prod@example.com".into()),
+                application: Some("https://org.okta.com/app".into()),
+                role: Some("arn:aws:iam::123:role/Prod".into()),
+                factor: None,
+                duration: None,
+            },
+            security: config::ProfileSecurityConfig::default(),
+            region: None,
+            secondary_role: None,
+        };
+        let dev = config::ProfileConfig {
+            okta: config::ProfileOktaConfig {
+                organization: Some("org.okta.com".into()),
+                user: Some("dev@example.com".into()),
+                application: Some("https://org.okta.com/app".into()),
+                role: Some("arn:aws:iam::123:role/Dev".into()),
+                factor: None,
+                duration: None,
+            },
+            security: config::ProfileSecurityConfig::default(),
+            region: None,
+            secondary_role: None,
+        };
+        config::save_profile_config("prod-admin", &prod).unwrap();
+        config::save_profile_config("dev-readonly", &dev).unwrap();
+
+        let mut usage_data = usage::UsageData {
+            profiles: HashMap::new(),
+        };
+        usage_data.profiles.insert(
+            "prod-admin".into(),
+            usage::ProfileUsage {
+                last_used: Utc::now(),
+                use_count: 3,
+            },
+        );
+        usage_data.profiles.insert(
+            "dev-readonly".into(),
+            usage::ProfileUsage {
+                last_used: Utc::now() - Duration::minutes(5),
+                use_count: 1,
+            },
+        );
+        usage::save_usage(&usage_data).unwrap();
+
+        assert_eq!(resolve_use_selector("1").unwrap(), "prod-admin");
+        assert_eq!(resolve_use_selector("2").unwrap(), "dev-readonly");
+
+        restore_test_home(prev_home, prev_userprofile, prev_xdg);
+    }
+
+    #[test]
+    fn resolve_use_selector_rejects_out_of_range_rank() {
+        let _lock = TEST_ENV_MUTEX.lock().expect("mutex poisoned");
+        let tmp = tempfile::tempdir().unwrap();
+        let (prev_home, prev_userprofile, prev_xdg) = set_test_home(tmp.path());
+
+        let err = resolve_use_selector("1").unwrap_err();
+        assert!(err.to_string().contains("out of range"));
+
+        restore_test_home(prev_home, prev_userprofile, prev_xdg);
     }
 
     #[test]

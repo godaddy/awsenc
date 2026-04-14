@@ -41,11 +41,14 @@ sudo cp awsenc awsenc-tpm-bridge /usr/local/bin/
 ### From source
 
 ```sh
-git clone https://github.com/godaddy/awsenc.git
-cd awsenc
+git clone https://github.com/godaddy/libenclaveapp.git
+cd libenclaveapp/awsenc
 make build
 make install        # installs to /usr/local/bin
 ```
+
+`awsenc` currently builds from the enclosing `libenclaveapp` checkout because
+the workspace depends on sibling crates under `../crates/`.
 
 ## Quick Start
 
@@ -238,7 +241,11 @@ awsenc migrate --dry-run    # preview changes
 awsenc migrate              # convert all credential_process entries
 ```
 
-This scans `~/.aws/config` for `aws-okta-processor` entries, creates equivalent awsenc profiles, comments out the original `credential_process` lines, and adds managed `awsenc` blocks. Profiles using `--secondary-role` are skipped with an explicit warning because chained role assumption is not supported yet.
+This scans `~/.aws/config` and `~/.aws/credentials` for `aws-okta-processor`
+entries, creates equivalent awsenc profiles, comments out the original live
+`credential_process` lines in `~/.aws/config`, and adds managed `awsenc`
+blocks there. Profiles using `--secondary-role` are skipped with an explicit
+warning because chained role assumption is not supported yet.
 
 ## Security
 
