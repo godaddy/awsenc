@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use enclaveapp_core::metadata;
 use serde::{Deserialize, Serialize};
 
+use crate::okta::{validate_okta_application_url, validate_okta_organization};
 use crate::{Error, Result};
 
 // ---------------------------------------------------------------------------
@@ -46,6 +48,7 @@ pub struct CacheConfig {
 pub struct ProfileConfig {
     #[serde(default)]
     pub okta: ProfileOktaConfig,
+    pub region: Option<String>,
     pub secondary_role: Option<SecondaryRoleConfig>,
 }
 
@@ -92,7 +95,10 @@ impl ConfigOverrides {
             biometric: std::env::var("AWSENC_BIOMETRIC")
                 .ok()
                 .and_then(|v| v.parse::<bool>().ok()),
-            region: None,
+            region: std::env::var("AWSENC_REGION")
+                .ok()
+                .or_else(|| std::env::var("AWS_REGION").ok())
+                .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok()),
         }
     }
 }
@@ -119,12 +125,25 @@ pub struct ResolvedConfig {
 // Directory helpers
 // ---------------------------------------------------------------------------
 
+fn config_root_dir() -> Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("XDG_CONFIG_HOME") {
+        let path = PathBuf::from(dir);
+        if !path.is_absolute() {
+            return Err(Error::Config(
+                "XDG_CONFIG_HOME must be an absolute path".into(),
+            ));
+        }
+        return Ok(path);
+    }
+
+    Ok(dirs::home_dir()
+        .ok_or_else(|| Error::Config("could not determine home directory".into()))?
+        .join(".config"))
+}
+
 /// Returns `~/.config/awsenc/`, creating it with 0o700 permissions if necessary.
 pub fn config_dir() -> Result<PathBuf> {
-    let dir = dirs::home_dir()
-        .ok_or_else(|| Error::Config("could not determine home directory".into()))?
-        .join(".config")
-        .join("awsenc");
+    let dir = config_root_dir()?.join("awsenc");
     ensure_dir(&dir)?;
     Ok(dir)
 }
@@ -166,7 +185,7 @@ pub fn load_global_config() -> Result<GlobalConfig> {
 
 /// Load a profile config from `~/.config/awsenc/profiles/<name>.toml`.
 pub fn load_profile_config(name: &str) -> Result<ProfileConfig> {
-    let path = profiles_dir()?.join(format!("{name}.toml"));
+    let path = profile_config_path(name)?;
     if !path.exists() {
         return Err(Error::Config(format!("profile config not found: {name}")));
     }
@@ -177,14 +196,51 @@ pub fn load_profile_config(name: &str) -> Result<ProfileConfig> {
 
 /// Save a profile config to `~/.config/awsenc/profiles/<name>.toml`.
 pub fn save_profile_config(name: &str, config: &ProfileConfig) -> Result<()> {
-    let dir = profiles_dir()?;
-    let path = dir.join(format!("{name}.toml"));
+    let path = profile_config_path(name)?;
     let contents = toml::to_string_pretty(config)?;
-    std::fs::write(&path, contents)?;
+    write_private_file(&path, contents.as_bytes())?;
+    Ok(())
+}
+
+/// Validate a profile name before it is used as a filesystem path component.
+pub fn validate_profile_name(name: &str) -> Result<&str> {
+    if name.is_empty() {
+        return Err(Error::InvalidProfileName(
+            "profile name cannot be empty".into(),
+        ));
+    }
+    if name.len() > 64 {
+        return Err(Error::InvalidProfileName(format!(
+            "profile name exceeds 64 characters: {name}"
+        )));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(Error::InvalidProfileName(format!(
+            "profile name contains invalid characters (only alphanumeric, hyphens, underscores allowed): {name}"
+        )));
+    }
+    Ok(name)
+}
+
+/// Resolve the on-disk path for a profile config after validating the name.
+pub fn profile_config_path(name: &str) -> Result<PathBuf> {
+    let name = validate_profile_name(name)?;
+    Ok(profiles_dir()?.join(format!("{name}.toml")))
+}
+
+fn write_private_file(path: &std::path::Path, contents: &[u8]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    metadata::atomic_write(path, contents)
+        .map_err(|e| Error::Config(format!("failed to write {}: {e}", path.display())))?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        metadata::restrict_file_permissions(path)
+            .map_err(|e| Error::Config(format!("failed to secure {}: {e}", path.display())))?;
     }
     Ok(())
 }
@@ -210,6 +266,7 @@ pub fn resolve_config(
         .or_else(|| profile.okta.organization.clone())
         .or_else(|| global.okta.organization.clone())
         .ok_or_else(|| Error::MissingConfig("okta organization".into()))?;
+    let okta_organization = validate_okta_organization(&okta_organization)?;
 
     let okta_user = overrides
         .user
@@ -222,6 +279,7 @@ pub fn resolve_config(
         .clone()
         .or_else(|| profile.okta.application.clone())
         .ok_or_else(|| Error::MissingConfig("okta application URL".into()))?;
+    let okta_application = validate_okta_application_url(&okta_organization, &okta_application)?;
 
     let okta_role = overrides
         .role
@@ -250,7 +308,7 @@ pub fn resolve_config(
         .as_ref()
         .map(|sr| sr.role_arn.clone());
 
-    let region = overrides.region.clone();
+    let region = overrides.region.clone().or_else(|| profile.region.clone());
 
     Ok(ResolvedConfig {
         okta_organization,
@@ -283,6 +341,7 @@ mod tests {
 
     #[test]
     fn config_overrides_from_env_empty() {
+        let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
         // Clear relevant env vars to test defaults
         std::env::remove_var("AWSENC_OKTA_USER");
         std::env::remove_var("AWSENC_OKTA_ORG");
@@ -333,11 +392,12 @@ mod tests {
         let profile = ProfileConfig {
             okta: ProfileOktaConfig {
                 organization: None,
-                application: Some("https://org.okta.com/home/amazon_aws/0oa123/272".into()),
+                application: Some("https://global-org.okta.com/home/amazon_aws/0oa123/272".into()),
                 role: Some("arn:aws:iam::123456789012:role/MyRole".into()),
                 factor: Some("yubikey".into()),
                 duration: Some(7200),
             },
+            region: Some("us-west-2".into()),
             secondary_role: None,
         };
 
@@ -348,6 +408,7 @@ mod tests {
         assert_eq!(resolved.okta_user, "globaluser");
         assert_eq!(resolved.okta_factor, "yubikey"); // profile overrides global
         assert_eq!(resolved.okta_duration, 7200);
+        assert_eq!(resolved.region.as_deref(), Some("us-west-2"));
         assert!(resolved.biometric);
         assert_eq!(resolved.refresh_window_seconds, 300);
     }
@@ -366,23 +427,26 @@ mod tests {
         let profile = ProfileConfig {
             okta: ProfileOktaConfig {
                 organization: None,
-                application: Some("https://org.okta.com/app".into()),
+                application: Some("https://global-org.okta.com/app".into()),
                 role: Some("arn:aws:iam::123:role/R".into()),
                 factor: Some("yubikey".into()),
                 duration: None,
             },
+            region: None,
             secondary_role: None,
         };
 
         let overrides = ConfigOverrides {
             factor: Some("totp".into()),
             duration: Some(900),
+            region: Some("eu-west-1".into()),
             ..Default::default()
         };
 
         let resolved = resolve_config("test", &global, &profile, &overrides).unwrap();
         assert_eq!(resolved.okta_factor, "totp"); // override beats profile
         assert_eq!(resolved.okta_duration, 900);
+        assert_eq!(resolved.region.as_deref(), Some("eu-west-1"));
     }
 
     #[test]
@@ -393,6 +457,86 @@ mod tests {
 
         let result = resolve_config("test", &global, &profile, &overrides);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolve_config_rejects_cross_origin_okta_application() {
+        let global = GlobalConfig {
+            okta: OktaConfig {
+                organization: Some("global-org.okta.com".into()),
+                user: Some("globaluser".into()),
+                default_factor: None,
+            },
+            ..Default::default()
+        };
+        let profile = ProfileConfig {
+            okta: ProfileOktaConfig {
+                organization: None,
+                application: Some("https://evil.example.com/home/app".into()),
+                role: Some("arn:aws:iam::123:role/R".into()),
+                factor: None,
+                duration: None,
+            },
+            ..Default::default()
+        };
+
+        let error =
+            resolve_config("test", &global, &profile, &ConfigOverrides::default()).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("must match Okta organization origin"));
+    }
+
+    #[test]
+    fn resolve_config_rejects_cleartext_okta_application() {
+        let global = GlobalConfig {
+            okta: OktaConfig {
+                organization: Some("global-org.okta.com".into()),
+                user: Some("globaluser".into()),
+                default_factor: None,
+            },
+            ..Default::default()
+        };
+        let profile = ProfileConfig {
+            okta: ProfileOktaConfig {
+                organization: None,
+                application: Some("http://global-org.okta.com/home/app".into()),
+                role: Some("arn:aws:iam::123:role/R".into()),
+                factor: None,
+                duration: None,
+            },
+            ..Default::default()
+        };
+
+        let error =
+            resolve_config("test", &global, &profile, &ConfigOverrides::default()).unwrap_err();
+        assert!(error.to_string().contains("must use HTTPS"));
+    }
+
+    #[test]
+    fn resolve_config_rejects_non_host_okta_organization() {
+        let global = GlobalConfig {
+            okta: OktaConfig {
+                organization: Some("global-org.okta.com/path".into()),
+                user: Some("globaluser".into()),
+                default_factor: None,
+            },
+            ..Default::default()
+        };
+        let profile = ProfileConfig {
+            okta: ProfileOktaConfig {
+                organization: None,
+                application: Some("https://global-org.okta.com/home/app".into()),
+                role: Some("arn:aws:iam::123:role/R".into()),
+                factor: None,
+                duration: None,
+            },
+            ..Default::default()
+        };
+
+        let error =
+            resolve_config("test", &global, &profile, &ConfigOverrides::default()).unwrap_err();
+        assert!(error.to_string().contains("bare host"));
     }
 
     #[test]
@@ -421,6 +565,7 @@ mod tests {
                 factor: None,
                 duration: Some(3600),
             },
+            region: Some("us-east-1".into()),
             secondary_role: Some(SecondaryRoleConfig {
                 role_arn: "arn:aws:iam::456:role/S".into(),
             }),
@@ -432,6 +577,7 @@ mod tests {
             parsed.okta.application.as_deref(),
             Some("https://org.okta.com/app")
         );
+        assert_eq!(parsed.region.as_deref(), Some("us-east-1"));
         assert_eq!(
             parsed
                 .secondary_role
@@ -443,14 +589,67 @@ mod tests {
 
     #[test]
     fn config_dir_returns_path() {
+        let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
         // Just verify it produces a path without error
         let dir = config_dir().unwrap();
         assert!(dir.ends_with("awsenc"));
     }
 
     #[test]
+    fn config_dir_uses_xdg_config_home_when_set() {
+        let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
+        let tmp = tempfile::tempdir().unwrap();
+        let xdg_dir = tmp.path().join("xdg");
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        std::env::set_var("XDG_CONFIG_HOME", &xdg_dir);
+
+        let dir = config_dir().unwrap();
+        assert_eq!(dir, xdg_dir.join("awsenc"));
+
+        match prev_xdg {
+            Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+    }
+
+    #[test]
+    fn config_dir_rejects_relative_xdg_config_home() {
+        let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        std::env::set_var("XDG_CONFIG_HOME", "relative-config");
+
+        let error = config_dir().unwrap_err().to_string();
+        assert!(error.contains("XDG_CONFIG_HOME"));
+
+        match prev_xdg {
+            Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+    }
+
+    #[test]
     fn profiles_dir_returns_path() {
+        let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
         let dir = profiles_dir().unwrap();
         assert!(dir.ends_with("profiles"));
+    }
+
+    #[test]
+    fn validate_profile_name_rejects_path_traversal() {
+        assert!(validate_profile_name("../escape").is_err());
+    }
+
+    #[test]
+    fn profile_config_path_rejects_invalid_names() {
+        assert!(profile_config_path("../escape").is_err());
+    }
+
+    #[test]
+    fn config_overrides_from_env_reads_region() {
+        let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
+        std::env::set_var("AWSENC_REGION", "ap-southeast-2");
+        let overrides = ConfigOverrides::from_env();
+        std::env::remove_var("AWSENC_REGION");
+        assert_eq!(overrides.region.as_deref(), Some("ap-southeast-2"));
     }
 }

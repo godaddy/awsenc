@@ -8,6 +8,9 @@ pub mod sts;
 
 use thiserror::Error;
 
+#[cfg(test)]
+pub(crate) static TEST_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("IO error: {0}")]

@@ -13,6 +13,7 @@ workspace = true
 
 [dependencies]
 awsenc-core = { path = "../awsenc-core" }
+enclaveapp-core = { workspace = true }
 enclaveapp-app-storage = { workspace = true }
 enclaveapp-wsl = { workspace = true }
 clap = { version = "4", features = ["derive", "env", "string"] }
@@ -36,4 +37,5 @@ winresource = "0.1"
 assert_cmd = "2"
 predicates = "3"
 tempfile = "3"
+toml = "0.8"
 enclaveapp-app-storage = { workspace = true, features = ["mock"] }

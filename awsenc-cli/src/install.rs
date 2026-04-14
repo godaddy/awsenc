@@ -1,6 +1,7 @@
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
+use enclaveapp_core::metadata;
 use regex::Regex;
 
 use awsenc_core::cache;
@@ -28,6 +29,7 @@ pub fn run_install(args: &InstallArgs) -> Result<()> {
             }
         }
     };
+    config::validate_profile_name(&profile_name)?;
 
     // Build profile config from args
     let profile_config = ProfileConfig {
@@ -38,6 +40,7 @@ pub fn run_install(args: &InstallArgs) -> Result<()> {
             factor: args.factor.clone(),
             duration: args.duration,
         },
+        region: args.region.clone(),
         secondary_role: None,
     };
 
@@ -69,7 +72,7 @@ pub fn run_install(args: &InstallArgs) -> Result<()> {
     let managed_block = build_managed_block(&profile_name, binary_path_str, args.region.as_deref());
 
     let updated = upsert_managed_block(&existing, &profile_name, &managed_block);
-    std::fs::write(&aws_config_path, &updated)?;
+    write_text_file(&aws_config_path, &updated)?;
 
     eprintln!("Updated {}", aws_config_path.display());
     eprintln!("Installed profile '{profile_name}'");
@@ -85,13 +88,14 @@ pub fn run_uninstall(args: &UninstallArgs) -> Result<()> {
         .profile
         .as_deref()
         .ok_or("no profile specified; use --profile <name>")?;
+    config::validate_profile_name(profile_name)?;
 
     // Remove managed block from ~/.aws/config
     let aws_config_path = aws_config_path()?;
     if aws_config_path.exists() {
         let existing = std::fs::read_to_string(&aws_config_path)?;
         let updated = remove_managed_block(&existing, profile_name);
-        std::fs::write(&aws_config_path, &updated)?;
+        write_text_file(&aws_config_path, &updated)?;
         eprintln!("Removed managed block from {}", aws_config_path.display());
     }
 
@@ -177,6 +181,7 @@ pub fn run_migrate(args: &MigrateArgs) -> Result<()> {
                     factor: entry.factor.clone(),
                     duration: entry.duration,
                 },
+                region: entry.region.clone(),
                 secondary_role: entry.secondary_role.as_ref().map(|r| SecondaryRoleConfig {
                     role_arn: r.clone(),
                 }),
@@ -207,7 +212,7 @@ pub fn run_migrate(args: &MigrateArgs) -> Result<()> {
             updated = upsert_managed_block(&updated, profile_name, &block);
         }
 
-        std::fs::write(&aws_config_path, &updated)?;
+        write_text_file(&aws_config_path, &updated)?;
         eprintln!("\nMigrated {} profile(s)", migrated_profiles.len());
     }
 
@@ -229,13 +234,13 @@ fn aws_credentials_path() -> Result<PathBuf> {
 }
 
 fn profile_config_path(name: &str) -> Result<PathBuf> {
-    let dir = config::profiles_dir()?;
-    Ok(dir.join(format!("{name}.toml")))
+    Ok(config::profile_config_path(name)?)
 }
 
 fn build_managed_block(profile_name: &str, binary_path: &str, region: Option<&str>) -> String {
     use std::fmt::Write;
 
+    let binary_path = quote_credential_process_arg(binary_path);
     let mut block = format!(
         "# --- BEGIN awsenc managed ({profile_name}) ---\n\
          [profile {profile_name}]\n\
@@ -249,12 +254,9 @@ fn build_managed_block(profile_name: &str, binary_path: &str, region: Option<&st
 }
 
 fn upsert_managed_block(existing: &str, profile_name: &str, new_block: &str) -> String {
-    let begin = format!("# --- BEGIN awsenc managed ({profile_name}) ---");
-    let end = format!("# --- END awsenc managed ({profile_name}) ---");
-
-    if let (Some(start), Some(end_pos)) = (existing.find(&begin), existing.find(&end)) {
+    if let Some((start, end)) = managed_block_range(existing, profile_name) {
         let before = &existing[..start];
-        let after = &existing[end_pos + end.len()..];
+        let after = &existing[end..];
         format!("{before}{new_block}{after}")
     } else {
         // Append
@@ -272,12 +274,9 @@ fn upsert_managed_block(existing: &str, profile_name: &str, new_block: &str) -> 
 }
 
 fn remove_managed_block(existing: &str, profile_name: &str) -> String {
-    let begin = format!("# --- BEGIN awsenc managed ({profile_name}) ---");
-    let end = format!("# --- END awsenc managed ({profile_name}) ---");
-
-    if let (Some(start), Some(end_pos)) = (existing.find(&begin), existing.find(&end)) {
+    if let Some((start, end)) = managed_block_range(existing, profile_name) {
         let before = &existing[..start];
-        let after = &existing[end_pos + end.len()..];
+        let after = &existing[end..];
         // Clean up double newlines
         let after = after.trim_start_matches('\n');
         let mut result = before.to_owned();
@@ -293,6 +292,34 @@ fn remove_managed_block(existing: &str, profile_name: &str) -> String {
     }
 }
 
+fn managed_block_range(existing: &str, profile_name: &str) -> Option<(usize, usize)> {
+    let escaped = regex::escape(profile_name);
+    let pattern = format!(
+        r"(?ms)^# --- BEGIN awsenc managed \({escaped}\) ---\n.*?^# --- END awsenc managed \({escaped}\) ---\n?"
+    );
+    let re = Regex::new(&pattern).ok()?;
+    re.find(existing).map(|m| (m.start(), m.end()))
+}
+
+fn quote_credential_process_arg(arg: &str) -> String {
+    if !arg
+        .chars()
+        .any(|c| c.is_whitespace() || c == '"' || c == '\\')
+    {
+        return arg.to_owned();
+    }
+
+    format!("\"{}\"", arg.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+fn write_text_file(path: &std::path::Path, contents: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    metadata::atomic_write(path, contents.as_bytes())
+        .map_err(|e| format!("failed to write {}: {e}", path.display()).into())
+}
+
 /// Parsed aws-okta-processor entry from an AWS config file.
 struct OktaProcessorEntry {
     profile_name: String,
@@ -301,6 +328,7 @@ struct OktaProcessorEntry {
     role: Option<String>,
     factor: Option<String>,
     duration: Option<u64>,
+    region: Option<String>,
     secondary_role: Option<String>,
 }
 
@@ -309,6 +337,7 @@ fn find_okta_processor_entries(content: &str) -> Vec<OktaProcessorEntry> {
     let mut entries = Vec::new();
     let mut current_profile: Option<String> = None;
     let mut current_cred_process: Option<String> = None;
+    let mut current_region: Option<String> = None;
 
     let profile_re = Regex::new(r"^\[(?:profile\s+)?([^\]]+)\]").expect("valid regex");
 
@@ -319,29 +348,36 @@ fn find_okta_processor_entries(content: &str) -> Vec<OktaProcessorEntry> {
             // Flush previous profile
             if let (Some(name), Some(cp)) = (current_profile.take(), current_cred_process.take()) {
                 if cp.contains("aws-okta-processor") || cp.contains("aws_okta_processor") {
-                    entries.push(parse_okta_processor_line(&name, &cp));
+                    entries.push(parse_okta_processor_line(&name, &cp, current_region.take()));
                 }
             }
             current_profile = Some(caps[1].to_owned());
             current_cred_process = None;
+            current_region = None;
         } else if trimmed.starts_with("credential_process") {
             if let Some(value) = trimmed.split_once('=').map(|(_, v)| v.trim()) {
                 current_cred_process = Some(value.to_owned());
             }
+        } else if trimmed.starts_with("region") {
+            current_region = trimmed.split_once('=').map(|(_, v)| v.trim().to_owned());
         }
     }
 
     // Flush last profile
     if let (Some(name), Some(cp)) = (current_profile, current_cred_process) {
         if cp.contains("aws-okta-processor") || cp.contains("aws_okta_processor") {
-            entries.push(parse_okta_processor_line(&name, &cp));
+            entries.push(parse_okta_processor_line(&name, &cp, current_region));
         }
     }
 
     entries
 }
 
-fn parse_okta_processor_line(profile_name: &str, command_line: &str) -> OktaProcessorEntry {
+fn parse_okta_processor_line(
+    profile_name: &str,
+    command_line: &str,
+    region: Option<String>,
+) -> OktaProcessorEntry {
     fn extract_flag(line: &str, flag: &str) -> Option<String> {
         let patterns = [format!("--{flag} "), format!("--{flag}=")];
         for pat in &patterns {
@@ -368,6 +404,7 @@ fn parse_okta_processor_line(profile_name: &str, command_line: &str) -> OktaProc
         role: extract_flag(command_line, "role"),
         factor: extract_flag(command_line, "factor"),
         duration: extract_flag(command_line, "duration").and_then(|d| d.parse().ok()),
+        region,
         secondary_role: extract_flag(command_line, "secondary-role"),
     }
 }
@@ -390,6 +427,14 @@ mod tests {
     fn build_managed_block_with_region() {
         let block = build_managed_block("prod", "/usr/local/bin/awsenc", Some("us-west-2"));
         assert!(block.contains("region = us-west-2"));
+    }
+
+    #[test]
+    fn build_managed_block_quotes_binary_with_spaces() {
+        let block = build_managed_block("prod", "/Applications/Aws Enc/awsenc", None);
+        assert!(block.contains(
+            "credential_process = \"/Applications/Aws Enc/awsenc\" serve --profile prod"
+        ));
     }
 
     #[test]
@@ -446,6 +491,7 @@ region = us-west-2
         );
         assert_eq!(entries[0].factor.as_deref(), Some("push"));
         assert_eq!(entries[0].duration, Some(3600));
+        assert_eq!(entries[0].region.as_deref(), Some("us-west-2"));
     }
 
     #[test]
@@ -478,11 +524,13 @@ credential_process = aws-okta-processor authenticate --organization org2.okta.co
         assert_eq!(entries[0].organization.as_deref(), Some("org1.okta.com"));
         assert_eq!(entries[0].factor.as_deref(), Some("push"));
         assert!(entries[0].duration.is_none());
+        assert_eq!(entries[0].region.as_deref(), Some("us-east-1"));
 
         assert_eq!(entries[1].profile_name, "account2");
         assert_eq!(entries[1].organization.as_deref(), Some("org2.okta.com"));
         assert_eq!(entries[1].factor.as_deref(), Some("totp"));
         assert_eq!(entries[1].duration, Some(7200));
+        assert!(entries[1].region.is_none());
     }
 
     #[test]
@@ -557,8 +605,10 @@ credential_process = aws-okta-processor authenticate --organization "my org.okta
         let entry = parse_okta_processor_line(
             "test",
             "aws-okta-processor authenticate --organization=org.okta.com --factor=push",
+            Some("us-west-1".into()),
         );
         assert_eq!(entry.organization.as_deref(), Some("org.okta.com"));
         assert_eq!(entry.factor.as_deref(), Some("push"));
+        assert_eq!(entry.region.as_deref(), Some("us-west-1"));
     }
 }

@@ -3,8 +3,8 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use wiremock::matchers::{body_string_contains, header, method, path, path_regex};
-use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+use wiremock::matchers::{body_string_contains, header, method, path, path_regex, query_param};
+use wiremock::{Match, Mock, MockServer, Request, Respond, ResponseTemplate};
 use zeroize::Zeroizing;
 
 use awsenc_core::okta::{AuthnResponse, OktaClient};
@@ -30,6 +30,14 @@ impl Respond for SequentialResponder {
         let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
         let clamped = idx.min(self.templates.len() - 1);
         self.templates[clamped].clone()
+    }
+}
+
+struct MissingCookieMatcher;
+
+impl Match for MissingCookieMatcher {
+    fn matches(&self, request: &Request) -> bool {
+        !request.headers.contains_key("cookie")
     }
 }
 
@@ -335,6 +343,7 @@ async fn okta_saml_assertion_extraction() {
 
     Mock::given(method("GET"))
         .and(path("/home/amazon_aws/0oa123abc/272"))
+        .and(query_param("sessionToken", "session-for-saml"))
         .respond_with(ResponseTemplate::new(200).set_body_string(saml_html))
         .expect(1)
         .mount(&server)
@@ -349,6 +358,51 @@ async fn okta_saml_assertion_extraction() {
         .unwrap();
 
     assert_eq!(result, "PHNhbWw+dGVzdGRhdGE8L3NhbWw+");
+}
+
+#[tokio::test]
+async fn okta_saml_assertion_follows_multiple_redirects() {
+    let server = MockServer::start().await;
+
+    let saml_html = r#"<html>
+<body>
+<form method="post">
+    <input type="hidden" name="SAMLResponse" value="bXVsdGktaG9wLXNhbWw="/>
+</form>
+</body>
+</html>"#;
+
+    Mock::given(method("GET"))
+        .and(path("/home/amazon_aws/0oa123abc/272"))
+        .and(query_param("sessionToken", "session-for-saml"))
+        .respond_with(ResponseTemplate::new(302).insert_header("location", "/app/step-one"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/app/step-one"))
+        .respond_with(ResponseTemplate::new(302).insert_header("location", "/app/step-two"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/app/step-two"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(saml_html))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = OktaClient::with_base_url(&server.uri()).unwrap();
+    let session_token = Zeroizing::new("session-for-saml".to_string());
+    let app_url = format!("{}/home/amazon_aws/0oa123abc/272", server.uri());
+    let result = client
+        .get_saml_assertion(&session_token, &app_url)
+        .await
+        .unwrap();
+
+    assert_eq!(result, "bXVsdGktaG9wLXNhbWw=");
 }
 
 #[tokio::test]
@@ -412,15 +466,85 @@ async fn okta_session_based_saml() {
 }
 
 #[tokio::test]
-async fn okta_session_expired_redirect() {
+async fn okta_session_based_saml_follows_cross_origin_redirect_without_cookie() {
+    let server = MockServer::start().await;
+    let federated_server = MockServer::start().await;
+
+    let saml_html = r#"<html>
+<body>
+<form method="post">
+    <input type="hidden" name="SAMLResponse" value="Y3Jvc3Mtb3JpZ2luLXNhbWw="/>
+</form>
+</body>
+</html>"#;
+
+    Mock::given(method("GET"))
+        .and(path("/home/amazon_aws/0oa_session/272"))
+        .and(header("cookie", "sid=cached-session-id-xyz"))
+        .respond_with(ResponseTemplate::new(302).insert_header(
+            "location",
+            format!("{}/federated/saml", federated_server.uri()),
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/federated/saml"))
+        .and(MissingCookieMatcher)
+        .respond_with(ResponseTemplate::new(200).set_body_string(saml_html))
+        .expect(1)
+        .mount(&federated_server)
+        .await;
+
+    let client = OktaClient::with_base_url(&server.uri()).unwrap();
+    let app_url = format!("{}/home/amazon_aws/0oa_session/272", server.uri());
+    let result = client
+        .get_saml_with_session("cached-session-id-xyz", &app_url)
+        .await
+        .unwrap();
+
+    assert_eq!(result, "Y3Jvc3Mtb3JpZ2luLXNhbWw=");
+}
+
+#[tokio::test]
+async fn okta_create_session_returns_cookie_id() {
     let server = MockServer::start().await;
 
-    // When the session is expired, Okta returns a redirect.
+    Mock::given(method("POST"))
+        .and(path("/api/v1/sessions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "sid-real-session-id",
+            "expiresAt": "2026-04-11T20:00:00Z"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = OktaClient::with_base_url(&server.uri()).unwrap();
+    let session_token = Zeroizing::new("one-time-session-token".to_string());
+    let session = client.create_session(&session_token).await.unwrap();
+
+    assert_eq!(session.session_id, "sid-real-session-id");
+    assert_eq!(session.expiration.to_rfc3339(), "2026-04-11T20:00:00+00:00");
+}
+
+#[tokio::test]
+async fn okta_session_expired_redirect() {
+    let server = MockServer::start().await;
+    let login_html = "<html><body><p>Please sign in</p></body></html>";
+
     Mock::given(method("GET"))
         .and(path("/home/amazon_aws/0oa_expired/272"))
-        .respond_with(
-            ResponseTemplate::new(302).insert_header("location", "https://login.okta.com"),
-        )
+        .respond_with(ResponseTemplate::new(302).insert_header("location", "/login/signin"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/login/signin"))
+        .and(header("cookie", "sid=expired-session-id"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(login_html))
         .expect(1)
         .mount(&server)
         .await;
