@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use enclaveapp_core::metadata;
 use serde::{Deserialize, Serialize};
 
 use crate::{Error, Result};
@@ -46,6 +47,7 @@ pub struct CacheConfig {
 pub struct ProfileConfig {
     #[serde(default)]
     pub okta: ProfileOktaConfig,
+    pub region: Option<String>,
     pub secondary_role: Option<SecondaryRoleConfig>,
 }
 
@@ -92,7 +94,10 @@ impl ConfigOverrides {
             biometric: std::env::var("AWSENC_BIOMETRIC")
                 .ok()
                 .and_then(|v| v.parse::<bool>().ok()),
-            region: None,
+            region: std::env::var("AWSENC_REGION")
+                .ok()
+                .or_else(|| std::env::var("AWS_REGION").ok())
+                .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok()),
         }
     }
 }
@@ -166,7 +171,7 @@ pub fn load_global_config() -> Result<GlobalConfig> {
 
 /// Load a profile config from `~/.config/awsenc/profiles/<name>.toml`.
 pub fn load_profile_config(name: &str) -> Result<ProfileConfig> {
-    let path = profiles_dir()?.join(format!("{name}.toml"));
+    let path = profile_config_path(name)?;
     if !path.exists() {
         return Err(Error::Config(format!("profile config not found: {name}")));
     }
@@ -177,14 +182,51 @@ pub fn load_profile_config(name: &str) -> Result<ProfileConfig> {
 
 /// Save a profile config to `~/.config/awsenc/profiles/<name>.toml`.
 pub fn save_profile_config(name: &str, config: &ProfileConfig) -> Result<()> {
-    let dir = profiles_dir()?;
-    let path = dir.join(format!("{name}.toml"));
+    let path = profile_config_path(name)?;
     let contents = toml::to_string_pretty(config)?;
-    std::fs::write(&path, contents)?;
+    write_private_file(&path, contents.as_bytes())?;
+    Ok(())
+}
+
+/// Validate a profile name before it is used as a filesystem path component.
+pub fn validate_profile_name(name: &str) -> Result<&str> {
+    if name.is_empty() {
+        return Err(Error::InvalidProfileName(
+            "profile name cannot be empty".into(),
+        ));
+    }
+    if name.len() > 64 {
+        return Err(Error::InvalidProfileName(format!(
+            "profile name exceeds 64 characters: {name}"
+        )));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(Error::InvalidProfileName(format!(
+            "profile name contains invalid characters (only alphanumeric, hyphens, underscores allowed): {name}"
+        )));
+    }
+    Ok(name)
+}
+
+/// Resolve the on-disk path for a profile config after validating the name.
+pub fn profile_config_path(name: &str) -> Result<PathBuf> {
+    let name = validate_profile_name(name)?;
+    Ok(profiles_dir()?.join(format!("{name}.toml")))
+}
+
+fn write_private_file(path: &std::path::Path, contents: &[u8]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    metadata::atomic_write(path, contents)
+        .map_err(|e| Error::Config(format!("failed to write {}: {e}", path.display())))?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        metadata::restrict_file_permissions(path)
+            .map_err(|e| Error::Config(format!("failed to secure {}: {e}", path.display())))?;
     }
     Ok(())
 }
@@ -250,7 +292,7 @@ pub fn resolve_config(
         .as_ref()
         .map(|sr| sr.role_arn.clone());
 
-    let region = overrides.region.clone();
+    let region = overrides.region.clone().or_else(|| profile.region.clone());
 
     Ok(ResolvedConfig {
         okta_organization,
@@ -338,6 +380,7 @@ mod tests {
                 factor: Some("yubikey".into()),
                 duration: Some(7200),
             },
+            region: Some("us-west-2".into()),
             secondary_role: None,
         };
 
@@ -348,6 +391,7 @@ mod tests {
         assert_eq!(resolved.okta_user, "globaluser");
         assert_eq!(resolved.okta_factor, "yubikey"); // profile overrides global
         assert_eq!(resolved.okta_duration, 7200);
+        assert_eq!(resolved.region.as_deref(), Some("us-west-2"));
         assert!(resolved.biometric);
         assert_eq!(resolved.refresh_window_seconds, 300);
     }
@@ -371,18 +415,21 @@ mod tests {
                 factor: Some("yubikey".into()),
                 duration: None,
             },
+            region: None,
             secondary_role: None,
         };
 
         let overrides = ConfigOverrides {
             factor: Some("totp".into()),
             duration: Some(900),
+            region: Some("eu-west-1".into()),
             ..Default::default()
         };
 
         let resolved = resolve_config("test", &global, &profile, &overrides).unwrap();
         assert_eq!(resolved.okta_factor, "totp"); // override beats profile
         assert_eq!(resolved.okta_duration, 900);
+        assert_eq!(resolved.region.as_deref(), Some("eu-west-1"));
     }
 
     #[test]
@@ -421,6 +468,7 @@ mod tests {
                 factor: None,
                 duration: Some(3600),
             },
+            region: Some("us-east-1".into()),
             secondary_role: Some(SecondaryRoleConfig {
                 role_arn: "arn:aws:iam::456:role/S".into(),
             }),
@@ -432,6 +480,7 @@ mod tests {
             parsed.okta.application.as_deref(),
             Some("https://org.okta.com/app")
         );
+        assert_eq!(parsed.region.as_deref(), Some("us-east-1"));
         assert_eq!(
             parsed
                 .secondary_role
@@ -452,5 +501,23 @@ mod tests {
     fn profiles_dir_returns_path() {
         let dir = profiles_dir().unwrap();
         assert!(dir.ends_with("profiles"));
+    }
+
+    #[test]
+    fn validate_profile_name_rejects_path_traversal() {
+        assert!(validate_profile_name("../escape").is_err());
+    }
+
+    #[test]
+    fn profile_config_path_rejects_invalid_names() {
+        assert!(profile_config_path("../escape").is_err());
+    }
+
+    #[test]
+    fn config_overrides_from_env_reads_region() {
+        std::env::set_var("AWSENC_REGION", "ap-southeast-2");
+        let overrides = ConfigOverrides::from_env();
+        std::env::remove_var("AWSENC_REGION");
+        assert_eq!(overrides.region.as_deref(), Some("ap-southeast-2"));
     }
 }

@@ -2,6 +2,7 @@ use std::io::{IsTerminal, Read};
 use std::time::Duration;
 
 use chrono::Utc;
+use tracing::warn;
 use zeroize::Zeroizing;
 
 use awsenc_core::cache::{
@@ -53,8 +54,15 @@ pub async fn run_auth(
     };
 
     let creds = obtain_credentials(&okta, &session_token, &resolved).await?;
+    let okta_session = match okta.create_session(&session_token).await {
+        Ok(session) => Some(session),
+        Err(err) => {
+            warn!("failed to create reusable Okta session: {err}");
+            None
+        }
+    };
 
-    encrypt_and_cache(profile, storage, &creds, &session_token)?;
+    encrypt_and_cache(profile, storage, &creds, okta_session.as_ref())?;
     usage::record_usage(profile);
 
     let remaining = creds
@@ -104,6 +112,7 @@ async fn obtain_credentials(
     session_token: &Zeroizing<String>,
     resolved: &config::ResolvedConfig,
 ) -> Result<awsenc_core::credential::AwsCredentials> {
+    ensure_supported_secondary_role(resolved)?;
     eprintln!("Getting SAML assertion...");
     let saml_assertion = okta
         .get_saml_assertion(session_token, &resolved.okta_application)
@@ -136,33 +145,45 @@ async fn obtain_credentials(
     Ok(creds)
 }
 
+fn ensure_supported_secondary_role(resolved: &config::ResolvedConfig) -> Result<()> {
+    if let Some(role) = resolved.secondary_role.as_deref() {
+        return Err(format!(
+            "secondary_role '{role}' is configured but chained role assumption is not supported yet"
+        )
+        .into());
+    }
+    Ok(())
+}
+
 #[allow(clippy::cast_sign_loss)]
 fn encrypt_and_cache(
     profile: &str,
     storage: &dyn EncryptionStorage,
     creds: &awsenc_core::credential::AwsCredentials,
-    session_token: &Zeroizing<String>,
+    okta_session: Option<&OktaSession>,
 ) -> Result<()> {
     let creds_json = serde_json::to_vec(creds)?;
     let aws_ciphertext = storage.encrypt(&creds_json)?;
-
-    let okta_session = OktaSession {
-        session_id: session_token.as_str().to_owned(),
-        expiration: Utc::now() + chrono::Duration::hours(2),
-    };
-    let okta_json = serde_json::to_vec(&okta_session)?;
-    let okta_ciphertext = storage.encrypt(&okta_json)?;
 
     let cache_file = CacheFile {
         header: CacheHeader {
             magic: MAGIC,
             version: FORMAT_VERSION,
-            flags: FLAG_HAS_OKTA_SESSION,
+            flags: if okta_session.is_some() {
+                FLAG_HAS_OKTA_SESSION
+            } else {
+                0
+            },
             credential_expiration: creds.expiration.timestamp() as u64,
-            okta_session_expiration: okta_session.expiration.timestamp() as u64,
+            okta_session_expiration: okta_session
+                .map_or(0, |session| session.expiration.timestamp() as u64),
         },
         aws_ciphertext,
-        okta_session_ciphertext: Some(okta_ciphertext),
+        okta_session_ciphertext: okta_session
+            .map(serde_json::to_vec)
+            .transpose()?
+            .map(|json| storage.encrypt(&json))
+            .transpose()?,
     };
 
     cache::write_cache(profile, &cache_file)?;
@@ -290,17 +311,16 @@ mod tests {
             session_token: Zeroizing::new("sessiontoken456".to_string()),
             expiration: Utc::now() + chrono::Duration::hours(1),
         };
-        let session_token = Zeroizing::new("okta-session-token".to_string());
+        let okta_session = OktaSession {
+            session_id: "okta-session-id".to_string(),
+            expiration: Utc::now() + chrono::Duration::hours(2),
+        };
 
         // Test encrypt_and_cache by verifying it constructs correct structures
         // without relying on file I/O (which depends on HOME env var)
         let creds_json = serde_json::to_vec(&creds).unwrap();
         let aws_ciphertext = storage.encrypt(&creds_json).unwrap();
 
-        let okta_session = OktaSession {
-            session_id: session_token.as_str().to_owned(),
-            expiration: Utc::now() + chrono::Duration::hours(2),
-        };
         let okta_json = serde_json::to_vec(&okta_session).unwrap();
         let okta_ciphertext = storage.encrypt(&okta_json).unwrap();
 
@@ -313,7 +333,7 @@ mod tests {
         // Verify Okta session can be decrypted
         let okta_plaintext = storage.decrypt(&okta_ciphertext).unwrap();
         let recovered_session: OktaSession = serde_json::from_slice(&okta_plaintext).unwrap();
-        assert_eq!(recovered_session.session_id, "okta-session-token");
+        assert_eq!(recovered_session.session_id, "okta-session-id");
 
         // Verify CacheFile structure
         #[allow(clippy::cast_sign_loss)]
@@ -331,6 +351,36 @@ mod tests {
         assert_eq!(cache_file.header.magic, MAGIC);
         assert_eq!(cache_file.header.flags, FLAG_HAS_OKTA_SESSION);
         assert!(cache_file.header.has_okta_session());
+    }
+
+    #[test]
+    fn encrypt_and_cache_without_okta_session_clears_session_flag() {
+        use enclaveapp_app_storage::mock::MockEncryptionStorage as MockStorage;
+
+        let storage = MockStorage::new();
+        let creds = awsenc_core::credential::AwsCredentials {
+            access_key_id: "AKIATEST".to_string(),
+            secret_access_key: Zeroizing::new("secretkey123".to_string()),
+            session_token: Zeroizing::new("sessiontoken456".to_string()),
+            expiration: Utc::now() + chrono::Duration::hours(1),
+        };
+
+        let creds_json = serde_json::to_vec(&creds).unwrap();
+        let aws_ciphertext = storage.encrypt(&creds_json).unwrap();
+        let cache_file = CacheFile {
+            header: CacheHeader {
+                magic: MAGIC,
+                version: FORMAT_VERSION,
+                flags: 0,
+                credential_expiration: creds.expiration.timestamp() as u64,
+                okta_session_expiration: 0,
+            },
+            aws_ciphertext,
+            okta_session_ciphertext: None,
+        };
+
+        assert_eq!(cache_file.header.flags, 0);
+        assert!(!cache_file.header.has_okta_session());
     }
 
     #[test]
@@ -357,5 +407,24 @@ mod tests {
     fn resolved_profile_none_when_both_empty() {
         let args = default_auth_args();
         assert_eq!(args.resolved_profile(), None);
+    }
+
+    #[test]
+    fn secondary_role_configuration_fails_fast() {
+        let resolved = config::ResolvedConfig {
+            okta_organization: "org.okta.com".into(),
+            okta_user: "user@example.com".into(),
+            okta_application: "https://org.okta.com/app".into(),
+            okta_role: "arn:aws:iam::123:role/Primary".into(),
+            okta_factor: "push".into(),
+            okta_duration: 3600,
+            biometric: false,
+            refresh_window_seconds: 600,
+            secondary_role: Some("arn:aws:iam::456:role/Secondary".into()),
+            region: None,
+        };
+
+        let err = ensure_supported_secondary_role(&resolved).unwrap_err();
+        assert!(err.to_string().contains("secondary_role"));
     }
 }

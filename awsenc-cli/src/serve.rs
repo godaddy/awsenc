@@ -42,18 +42,18 @@ pub async fn run_serve(args: &ServeArgs, storage: &dyn EncryptionStorage) -> Res
     match state {
         CredentialState::Fresh => {
             let creds = decrypt_aws_credentials(storage, &cache.aws_ciphertext)?;
-            output_credentials(&creds);
+            print_credentials(&creds)?;
             usage::record_usage(&profile);
         }
         CredentialState::Refresh => {
             match try_transparent_reauth(&profile, storage, &cache).await {
                 Ok(new_creds) => {
-                    output_credentials(&new_creds);
+                    print_credentials(&new_creds)?;
                 }
                 Err(e) => {
                     tracing::debug!("transparent re-auth failed: {e}; using cached credentials");
                     let creds = decrypt_aws_credentials(storage, &cache.aws_ciphertext)?;
-                    output_credentials(&creds);
+                    print_credentials(&creds)?;
                 }
             }
             usage::record_usage(&profile);
@@ -61,7 +61,7 @@ pub async fn run_serve(args: &ServeArgs, storage: &dyn EncryptionStorage) -> Res
         CredentialState::Expired => {
             let reauth_result = try_transparent_reauth(&profile, storage, &cache).await;
             if let Ok(new_creds) = reauth_result {
-                output_credentials(&new_creds);
+                print_credentials(&new_creds)?;
                 usage::record_usage(&profile);
             } else {
                 eprintln!("Credentials for profile '{profile}' are expired");
@@ -74,7 +74,7 @@ pub async fn run_serve(args: &ServeArgs, storage: &dyn EncryptionStorage) -> Res
     Ok(())
 }
 
-fn resolve_serve_profile(args: &ServeArgs) -> Result<String> {
+pub(crate) fn resolve_serve_profile(args: &ServeArgs) -> Result<String> {
     if let Some(ref p) = args.profile {
         let global = config::load_global_config().unwrap_or_default();
         return Ok(config::resolve_alias(p, &global));
@@ -113,11 +113,13 @@ fn decrypt_aws_credentials(
 }
 
 #[allow(clippy::print_stdout)]
-fn output_credentials(creds: &AwsCredentials) {
+fn print_credentials(creds: &AwsCredentials) -> Result<()> {
     let output = CredentialProcessOutput::from_credentials(creds);
     // This is the ONLY thing that goes to stdout
-    let json = serde_json::to_string(&output).expect("credential JSON serialization failed");
+    let json =
+        serde_json::to_string(&output).map_err(|e| format!("credential JSON serialization failed: {e}"))?;
     println!("{json}");
+    Ok(())
 }
 
 /// Attempt transparent re-authentication using a cached Okta session.
@@ -151,6 +153,12 @@ async fn try_transparent_reauth(
     let profile_config = config::load_profile_config(profile)?;
     let overrides = ConfigOverrides::from_env();
     let resolved = config::resolve_config(profile, &global, &profile_config, &overrides)?;
+    if let Some(role) = resolved.secondary_role.as_deref() {
+        return Err(format!(
+            "secondary_role '{role}' is configured but chained role assumption is not supported yet"
+        )
+        .into());
+    }
 
     let okta = OktaClient::new(&resolved.okta_organization)?;
     let saml_assertion = okta
@@ -292,8 +300,7 @@ mod tests {
             session_token: Zeroizing::new("token".to_string()),
             expiration: Utc::now(),
         };
-        let output = CredentialProcessOutput::from_credentials(&creds);
-        let json = serde_json::to_string(&output).unwrap();
+        let json = serde_json::to_string(&CredentialProcessOutput::from_credentials(&creds)).unwrap();
         assert!(json.contains("AKIDTEST"));
         assert!(json.contains("Version"));
     }

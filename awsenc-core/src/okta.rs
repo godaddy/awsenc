@@ -102,6 +102,19 @@ struct VerifyPushRequest {
     state_token: String,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateSessionRequest {
+    session_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateSessionResponse {
+    id: String,
+    expires_at: DateTime<Utc>,
+}
+
 impl OktaClient {
     /// Create a new Okta API client for the given organization domain.
     ///
@@ -334,6 +347,40 @@ impl OktaClient {
 
         let html = resp.text().await?;
         extract_saml_assertion(&html)
+    }
+
+    /// Exchange a one-time session token for a reusable Okta session cookie id.
+    pub async fn create_session(&self, session_token: &Zeroizing<String>) -> Result<OktaSession> {
+        let url = format!("{}/api/v1/sessions", self.base_url);
+        let body = CreateSessionRequest {
+            session_token: session_token.as_str().to_owned(),
+        };
+
+        let resp = self
+            .client
+            .post(&url)
+            .header(ACCEPT, "application/json")
+            .header(CONTENT_TYPE, "application/json")
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        let text = resp.text().await?;
+        if !status.is_success() {
+            let err_msg = parse_okta_error(&text);
+            return Err(Error::Auth(format!(
+                "Okta session creation failed (HTTP {status}): {err_msg}"
+            )));
+        }
+
+        let created: CreateSessionResponse = serde_json::from_str(&text)
+            .map_err(|e| Error::Auth(format!("bad Okta session response: {e}")))?;
+
+        Ok(OktaSession {
+            session_id: created.id,
+            expiration: created.expires_at,
+        })
     }
 
     /// Get a SAML assertion using an existing Okta session cookie.

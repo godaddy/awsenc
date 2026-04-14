@@ -30,6 +30,12 @@ pub async fn run_exec(args: &ExecArgs, storage: &dyn EncryptionStorage) -> Resul
     let creds = if let Some(c) = cached {
         c
     } else {
+        if !std::io::stdin().is_terminal() {
+            return Err(
+                "no cached credentials and stdin is not a TTY; run 'awsenc auth --pass-stdin' first"
+                    .into(),
+            );
+        }
         eprintln!("No cached credentials for '{profile}', authenticating...");
         let auth_args = AuthArgs {
             profile_positional: Some(profile.to_owned()),
@@ -77,7 +83,7 @@ pub async fn run_exec(args: &ExecArgs, storage: &dyn EncryptionStorage) -> Resul
     std::process::exit(status.code().unwrap_or(1));
 }
 
-fn resolve_exec_profile(args: &ExecArgs) -> Result<String> {
+pub(crate) fn resolve_exec_profile(args: &ExecArgs) -> Result<String> {
     if let Some(p) = args.resolved_profile() {
         let global = config::load_global_config().unwrap_or_default();
         return Ok(config::resolve_alias(p, &global));
@@ -143,9 +149,6 @@ mod tests {
     use super::*;
     use enclaveapp_app_storage::mock::MockEncryptionStorage as MockStorage;
 
-    // Mutex to serialize tests that modify the HOME env var
-    static HOME_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     fn setup_temp_home(tmp: &tempfile::TempDir) -> Option<String> {
         let prev = std::env::var("HOME").ok();
         let config_dir = tmp.path().join(".config").join("awsenc");
@@ -163,7 +166,7 @@ mod tests {
 
     #[test]
     fn get_cached_credentials_returns_none_when_no_cache() {
-        let _lock = HOME_MUTEX.lock().expect("mutex poisoned");
+        let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
         let tmp = tempfile::tempdir().unwrap();
         let prev = setup_temp_home(&tmp);
         let storage = MockStorage::new();
@@ -177,7 +180,7 @@ mod tests {
         use awsenc_core::cache::{self, CacheFile, CacheHeader, FORMAT_VERSION, MAGIC};
         use zeroize::Zeroizing;
 
-        let _lock = HOME_MUTEX.lock().expect("mutex poisoned");
+        let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
         let tmp = tempfile::tempdir().unwrap();
         let prev = setup_temp_home(&tmp);
         let storage = MockStorage::new();
@@ -222,7 +225,7 @@ mod tests {
         use awsenc_core::cache::{self, CacheFile, CacheHeader, FORMAT_VERSION, MAGIC};
         use zeroize::Zeroizing;
 
-        let _lock = HOME_MUTEX.lock().expect("mutex poisoned");
+        let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
         let tmp = tempfile::tempdir().unwrap();
         let prev = setup_temp_home(&tmp);
         let storage = MockStorage::new();
@@ -315,5 +318,19 @@ mod tests {
             err.contains("no command"),
             "expected 'no command' error, got: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn run_exec_without_cache_fails_fast_when_stdin_is_not_tty() {
+        let storage = MockStorage::new();
+        let args = ExecArgs {
+            profile_positional: Some("test".to_string()),
+            profile_flag: None,
+            command: vec!["echo".to_string(), "hello".to_string()],
+        };
+        let result = run_exec(&args, &storage).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("stdin is not a TTY"));
     }
 }

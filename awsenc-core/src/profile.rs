@@ -87,16 +87,15 @@ pub fn list_profiles() -> Result<Vec<ProfileInfo>> {
 
 /// Check if a profile config file exists.
 pub fn profile_exists(name: &str) -> bool {
-    config::profiles_dir()
-        .map(|dir| dir.join(format!("{name}.toml")).exists())
+    config::profile_config_path(name)
+        .map(|path| path.exists())
         .unwrap_or(false)
 }
 
 /// Delete a profile's config and cache files.
 pub fn delete_profile(name: &str) -> Result<()> {
     // Delete profile config
-    let profiles_dir = config::profiles_dir()?;
-    let config_path = profiles_dir.join(format!("{name}.toml"));
+    let config_path = config::profile_config_path(name)?;
     if config_path.exists() {
         std::fs::remove_file(&config_path)?;
     } else {
@@ -148,6 +147,11 @@ mod tests {
 
     #[test]
     fn roundtrip_profile_config_and_check_exists() {
+        let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
+        let tmp = tempfile::tempdir().unwrap();
+        let prev_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", tmp.path());
+
         // Create a temp profile, verify it exists, then clean up
         let name = "test-roundtrip-profile-awsenc";
         let config = ProfileConfig {
@@ -158,6 +162,7 @@ mod tests {
                 factor: None,
                 duration: None,
             },
+            region: Some("us-west-1".into()),
             secondary_role: None,
         };
 
@@ -172,11 +177,21 @@ mod tests {
         // Delete
         delete_profile(name).unwrap();
         assert!(!profile_exists(name));
+        match prev_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
     }
 
     #[test]
     fn delete_nonexistent_profile_errors() {
         let result = delete_profile("definitely-does-not-exist-xyz");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn invalid_profile_name_is_rejected_consistently() {
+        assert!(!profile_exists("../escape"));
+        assert!(delete_profile("../escape").is_err());
     }
 }

@@ -412,6 +412,28 @@ async fn okta_session_based_saml() {
 }
 
 #[tokio::test]
+async fn okta_create_session_returns_cookie_id() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/v1/sessions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "sid-real-session-id",
+            "expiresAt": "2026-04-11T20:00:00Z"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = OktaClient::with_base_url(&server.uri()).unwrap();
+    let session_token = Zeroizing::new("one-time-session-token".to_string());
+    let session = client.create_session(&session_token).await.unwrap();
+
+    assert_eq!(session.session_id, "sid-real-session-id");
+    assert_eq!(session.expiration.to_rfc3339(), "2026-04-11T20:00:00+00:00");
+}
+
+#[tokio::test]
 async fn okta_session_expired_redirect() {
     let server = MockServer::start().await;
 

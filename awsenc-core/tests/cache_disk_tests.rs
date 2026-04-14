@@ -295,6 +295,7 @@ fn config_profile_save_load_roundtrip() {
             factor: Some("yubikey".into()),
             duration: Some(7200),
         },
+        region: Some("us-west-2".into()),
         secondary_role: Some(SecondaryRoleConfig {
             role_arn: "arn:aws:iam::987654321098:role/CrossAccount".into(),
         }),
@@ -320,6 +321,7 @@ fn config_profile_save_load_roundtrip() {
     );
     assert_eq!(loaded.okta.factor.as_deref(), Some("yubikey"));
     assert_eq!(loaded.okta.duration, Some(7200));
+    assert_eq!(loaded.region.as_deref(), Some("us-west-2"));
     assert_eq!(
         loaded
             .secondary_role
@@ -342,6 +344,7 @@ fn config_profile_minimal_roundtrip() {
             factor: None,
             duration: None,
         },
+        region: None,
         secondary_role: None,
     };
 

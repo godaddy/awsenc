@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use enclaveapp_core::metadata;
+
 use crate::{Error, Result};
 
 /// Magic bytes: "AWSE"
@@ -184,24 +186,14 @@ pub fn read_cache(profile: &str) -> Result<Option<CacheFile>> {
 /// Sets 0o600 permissions on Unix.
 pub fn write_cache(profile: &str, cache: &CacheFile) -> Result<()> {
     let path = cache_path(profile)?;
-    let dir = path
-        .parent()
-        .ok_or_else(|| Error::CacheFormat("cache path has no parent directory".into()))?;
-
     let encoded = cache.encode();
-
-    // Write to a temp file in the same directory, then rename for atomicity.
-    let sanitized = sanitize_profile_name(profile)?;
-    let temp_path = dir.join(format!(".{sanitized}.enc.tmp"));
-    std::fs::write(&temp_path, &encoded)?;
-
+    metadata::atomic_write(&path, &encoded)
+        .map_err(|e| Error::CacheFormat(format!("failed to write cache: {e}")))?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&temp_path, std::fs::Permissions::from_mode(0o600))?;
+        metadata::restrict_file_permissions(&path)
+            .map_err(|e| Error::CacheFormat(format!("failed to secure cache: {e}")))?;
     }
-
-    std::fs::rename(&temp_path, &path)?;
     Ok(())
 }
 
@@ -258,25 +250,7 @@ pub fn delete_cache(profile: &str) -> Result<()> {
 
 /// Validate a profile name: alphanumeric, hyphens, underscores only, max 64 characters.
 pub fn sanitize_profile_name(name: &str) -> Result<String> {
-    if name.is_empty() {
-        return Err(Error::InvalidProfileName(
-            "profile name cannot be empty".into(),
-        ));
-    }
-    if name.len() > 64 {
-        return Err(Error::InvalidProfileName(format!(
-            "profile name exceeds 64 characters: {name}"
-        )));
-    }
-    if !name
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        return Err(Error::InvalidProfileName(format!(
-            "profile name contains invalid characters (only alphanumeric, hyphens, underscores allowed): {name}"
-        )));
-    }
-    Ok(name.to_owned())
+    Ok(crate::config::validate_profile_name(name)?.to_owned())
 }
 
 #[cfg(test)]
@@ -412,6 +386,40 @@ mod tests {
 
         let header2 = CacheHeader { flags: 0, ..header };
         assert!(!header2.has_okta_session());
+    }
+
+    #[test]
+    fn write_cache_ignores_preexisting_legacy_tmp_file() {
+        let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
+        let dir = tempfile::tempdir().unwrap();
+        let prev_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", dir.path());
+        let path = cache_path("tmp-test").unwrap();
+        let temp_path = path
+            .parent()
+            .unwrap()
+            .join(".tmp-test.enc.tmp");
+        std::fs::write(&temp_path, b"stale").unwrap();
+
+        let cache = CacheFile {
+            header: CacheHeader {
+                magic: MAGIC,
+                version: FORMAT_VERSION,
+                flags: 0,
+                credential_expiration: 1,
+                okta_session_expiration: 0,
+            },
+            aws_ciphertext: vec![1, 2, 3],
+            okta_session_ciphertext: None,
+        };
+
+        write_cache("tmp-test", &cache).unwrap();
+        let loaded = read_cache("tmp-test").unwrap().unwrap();
+        assert_eq!(loaded.aws_ciphertext, vec![1, 2, 3]);
+        match prev_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
     }
 
     #[test]
