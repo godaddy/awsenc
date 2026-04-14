@@ -1,6 +1,7 @@
 use base64::Engine;
 use chrono::{DateTime, Utc};
-use regex::Regex;
+use roxmltree::{Document, Node};
+use std::time::Duration;
 use tracing::debug;
 use zeroize::Zeroizing;
 
@@ -21,19 +22,23 @@ pub struct StsClient {
     endpoint_url: String,
 }
 
+const STS_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_STS_RESPONSE_BYTES: usize = 256 * 1024;
+
 impl StsClient {
     /// Create a new STS client with the default endpoint.
     pub fn new() -> Self {
-        Self {
-            client: reqwest::Client::new(),
-            endpoint_url: "https://sts.amazonaws.com".to_owned(),
-        }
+        Self::with_endpoint_and_timeout("https://sts.amazonaws.com", STS_HTTP_TIMEOUT)
     }
 
     /// Create a new STS client with a custom endpoint URL (for testing).
     pub fn with_endpoint(endpoint_url: &str) -> Self {
+        Self::with_endpoint_and_timeout(endpoint_url, STS_HTTP_TIMEOUT)
+    }
+
+    fn with_endpoint_and_timeout(endpoint_url: &str, timeout: Duration) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: build_sts_http_client(timeout),
             endpoint_url: endpoint_url.to_owned(),
         }
     }
@@ -65,11 +70,11 @@ impl StsClient {
             .await?;
 
         let status = resp.status();
-        let body = resp.text().await?;
+        let body = read_response_text(resp, MAX_STS_RESPONSE_BYTES).await?;
 
         if !status.is_success() {
-            let error_msg = extract_xml_tag(&body, "Message")
-                .or_else(|| extract_xml_tag(&body, "Error"))
+            let error_msg = find_text_by_local_name(&body, "Message")
+                .or_else(|| find_text_by_local_name(&body, "Error"))
                 .unwrap_or_else(|| body.chars().take(500).collect());
             return Err(Error::Sts(format!(
                 "AssumeRoleWithSAML failed (HTTP {status}): {error_msg}"
@@ -86,19 +91,54 @@ impl Default for StsClient {
     }
 }
 
+fn build_sts_http_client(timeout: Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(timeout)
+        .build()
+        .expect("failed to build STS HTTP client")
+}
+
+async fn read_response_text(mut response: reqwest::Response, max_bytes: usize) -> Result<String> {
+    if let Some(content_length) = response.content_length() {
+        if content_length > max_bytes as u64 {
+            return Err(Error::Sts(format!(
+                "STS response exceeds {max_bytes} bytes"
+            )));
+        }
+    }
+
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        bytes.extend_from_slice(&chunk);
+        if bytes.len() > max_bytes {
+            return Err(Error::Sts(format!(
+                "STS response exceeds {max_bytes} bytes"
+            )));
+        }
+    }
+
+    String::from_utf8(bytes)
+        .map_err(|error| Error::Sts(format!("STS response is not valid UTF-8: {error}")))
+}
+
 /// Parse the `AssumeRoleWithSAML` XML response into `AwsCredentials`.
 fn parse_assume_role_response(xml: &str) -> Result<AwsCredentials> {
-    let access_key_id = extract_xml_tag(xml, "AccessKeyId")
-        .ok_or_else(|| Error::Sts("missing AccessKeyId in STS response".into()))?;
+    let doc =
+        Document::parse(xml).map_err(|error| Error::Sts(format!("invalid STS XML: {error}")))?;
+    let credentials = doc
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name() == "AssumeRoleWithSAMLResult")
+        .and_then(|result| {
+            result
+                .children()
+                .find(|node| node.is_element() && node.tag_name().name() == "Credentials")
+        })
+        .ok_or_else(|| Error::Sts("missing Credentials in STS response".into()))?;
 
-    let secret_access_key = extract_xml_tag(xml, "SecretAccessKey")
-        .ok_or_else(|| Error::Sts("missing SecretAccessKey in STS response".into()))?;
-
-    let session_token = extract_xml_tag(xml, "SessionToken")
-        .ok_or_else(|| Error::Sts("missing SessionToken in STS response".into()))?;
-
-    let expiration_str = extract_xml_tag(xml, "Expiration")
-        .ok_or_else(|| Error::Sts("missing Expiration in STS response".into()))?;
+    let access_key_id = required_child_text(credentials, "AccessKeyId")?;
+    let secret_access_key = required_child_text(credentials, "SecretAccessKey")?;
+    let session_token = required_child_text(credentials, "SessionToken")?;
+    let expiration_str = required_child_text(credentials, "Expiration")?;
 
     let expiration: DateTime<Utc> = expiration_str
         .parse()
@@ -112,14 +152,20 @@ fn parse_assume_role_response(xml: &str) -> Result<AwsCredentials> {
     })
 }
 
-/// Extract the text content of an XML tag using regex.
-///
-/// This is intentionally simple -- the STS response format is predictable and
-/// adding a full XML parser dependency is unnecessary.
-fn extract_xml_tag(xml: &str, tag: &str) -> Option<String> {
-    let pattern = format!("<{tag}>([^<]*)</{tag}>");
-    let re = Regex::new(&pattern).ok()?;
-    re.captures(xml).map(|caps| caps[1].to_owned())
+fn required_child_text(node: Node<'_, '_>, tag: &str) -> Result<String> {
+    node.children()
+        .find(|child| child.is_element() && child.tag_name().name() == tag)
+        .and_then(text_content)
+        .map(str::to_owned)
+        .ok_or_else(|| Error::Sts(format!("missing {tag} in STS response")))
+}
+
+fn find_text_by_local_name(xml: &str, tag: &str) -> Option<String> {
+    let doc = Document::parse(xml).ok()?;
+    doc.descendants()
+        .find(|node| node.is_element() && node.tag_name().name() == tag)
+        .and_then(text_content)
+        .map(str::to_owned)
 }
 
 /// Parse available roles from a base64-encoded SAML assertion.
@@ -132,48 +178,51 @@ pub fn parse_saml_roles(saml_assertion: &str) -> Result<Vec<SamlRole>> {
     let decoded_bytes = base64::engine::general_purpose::STANDARD.decode(saml_assertion)?;
     let decoded = String::from_utf8(decoded_bytes)
         .map_err(|e| Error::Saml(format!("SAML assertion is not valid UTF-8: {e}")))?;
-
-    // Extract the Role attribute values from the SAML XML.
-    // The attribute looks like:
-    //   <Attribute Name="https://aws.amazon.com/SAML/Attributes/Role">
-    //     <AttributeValue>arn:aws:iam::123:role/Role,arn:aws:iam::123:saml-provider/Okta</AttributeValue>
-    //   </Attribute>
-    let re = Regex::new(r"<(?:\w+:)?AttributeValue[^>]*>([^<]*)</(?:\w+:)?AttributeValue>")?;
-
-    // Find the Role attribute block
-    let role_attr_re = Regex::new(
-        r#"(?s)<(?:\w+:)?Attribute[^>]+Name\s*=\s*"https://aws\.amazon\.com/SAML/Attributes/Role"[^>]*>(.*?)</(?:\w+:)?Attribute>"#,
-    )?;
-
-    let role_block = role_attr_re
-        .captures(&decoded)
-        .ok_or_else(|| Error::Saml("no Role attribute found in SAML assertion".into()))?;
-
-    let block_text = &role_block[1];
+    let doc =
+        Document::parse(&decoded).map_err(|e| Error::Saml(format!("invalid SAML XML: {e}")))?;
     let mut roles = Vec::new();
+    let mut found_role_attribute = false;
 
-    for caps in re.captures_iter(block_text) {
-        let value = caps[1].trim();
-        if value.is_empty() {
-            continue;
+    for attribute in doc.descendants().filter(|node| {
+        node.is_element()
+            && node.tag_name().name() == "Attribute"
+            && node.attribute("Name") == Some("https://aws.amazon.com/SAML/Attributes/Role")
+    }) {
+        found_role_attribute = true;
+        for value_node in attribute
+            .children()
+            .filter(|node| node.is_element() && node.tag_name().name() == "AttributeValue")
+        {
+            let Some(value) = text_content(value_node).map(str::trim) else {
+                continue;
+            };
+            if value.is_empty() {
+                continue;
+            }
+
+            let parts: Vec<&str> = value.split(',').collect();
+            if parts.len() != 2 {
+                debug!("skipping malformed role attribute value: {value}");
+                continue;
+            }
+
+            let (role_arn, principal_arn) = if parts[0].contains(":role/") {
+                (parts[0].trim().to_owned(), parts[1].trim().to_owned())
+            } else {
+                (parts[1].trim().to_owned(), parts[0].trim().to_owned())
+            };
+
+            roles.push(SamlRole {
+                role_arn,
+                principal_arn,
+            });
         }
+    }
 
-        let parts: Vec<&str> = value.split(',').collect();
-        if parts.len() != 2 {
-            debug!("skipping malformed role attribute value: {value}");
-            continue;
-        }
-
-        let (role_arn, principal_arn) = if parts[0].contains(":role/") {
-            (parts[0].trim().to_owned(), parts[1].trim().to_owned())
-        } else {
-            (parts[1].trim().to_owned(), parts[0].trim().to_owned())
-        };
-
-        roles.push(SamlRole {
-            role_arn,
-            principal_arn,
-        });
+    if !found_role_attribute {
+        return Err(Error::Saml(
+            "no Role attribute found in SAML assertion".into(),
+        ));
     }
 
     if roles.is_empty() {
@@ -183,17 +232,32 @@ pub fn parse_saml_roles(saml_assertion: &str) -> Result<Vec<SamlRole>> {
     Ok(roles)
 }
 
+fn text_content<'input>(node: Node<'input, 'input>) -> Option<&'input str> {
+    node.text().or_else(|| {
+        if node
+            .children()
+            .all(|child| !child.is_text() && !child.is_element())
+        {
+            Some("")
+        } else {
+            None
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+    use wiremock::matchers::{body_string_contains, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn extract_xml_tag_found() {
         let xml = "<Root><AccessKeyId>AKIAIOSFODNN7EXAMPLE</AccessKeyId></Root>";
         assert_eq!(
-            extract_xml_tag(xml, "AccessKeyId"),
+            find_text_by_local_name(xml, "AccessKeyId"),
             Some("AKIAIOSFODNN7EXAMPLE".to_owned())
         );
     }
@@ -201,13 +265,16 @@ mod tests {
     #[test]
     fn extract_xml_tag_not_found() {
         let xml = "<Root><Other>value</Other></Root>";
-        assert_eq!(extract_xml_tag(xml, "AccessKeyId"), None);
+        assert_eq!(find_text_by_local_name(xml, "AccessKeyId"), None);
     }
 
     #[test]
     fn extract_xml_tag_empty() {
         let xml = "<Root><AccessKeyId></AccessKeyId></Root>";
-        assert_eq!(extract_xml_tag(xml, "AccessKeyId"), Some(String::new()));
+        assert_eq!(
+            find_text_by_local_name(xml, "AccessKeyId"),
+            Some(String::new())
+        );
     }
 
     #[test]
@@ -312,6 +379,66 @@ mod tests {
     }
 
     #[test]
+    fn parse_assume_role_response_with_namespace() {
+        let xml = r#"
+            <AssumeRoleWithSAMLResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
+                <AssumeRoleWithSAMLResult>
+                    <Credentials>
+                        <AccessKeyId>ASIAXMLNS</AccessKeyId>
+                        <SecretAccessKey>secret</SecretAccessKey>
+                        <SessionToken>token</SessionToken>
+                        <Expiration>2026-04-11T16:30:00Z</Expiration>
+                    </Credentials>
+                </AssumeRoleWithSAMLResult>
+            </AssumeRoleWithSAMLResponse>
+        "#;
+
+        let creds = parse_assume_role_response(xml).unwrap();
+        assert_eq!(creds.access_key_id, "ASIAXMLNS");
+    }
+
+    #[test]
+    fn parse_assume_role_response_ignores_duplicate_tags_outside_credentials() {
+        let xml = r#"
+            <Envelope>
+                <AccessKeyId>WRONG</AccessKeyId>
+                <AssumeRoleWithSAMLResponse>
+                    <AssumeRoleWithSAMLResult>
+                        <Credentials>
+                            <AccessKeyId>ASIACORRECT</AccessKeyId>
+                            <SecretAccessKey>secret</SecretAccessKey>
+                            <SessionToken>token</SessionToken>
+                            <Expiration>2026-04-11T16:30:00Z</Expiration>
+                        </Credentials>
+                    </AssumeRoleWithSAMLResult>
+                </AssumeRoleWithSAMLResponse>
+            </Envelope>
+        "#;
+
+        let creds = parse_assume_role_response(xml).unwrap();
+        assert_eq!(creds.access_key_id, "ASIACORRECT");
+    }
+
+    #[test]
+    fn parse_saml_roles_handles_namespaced_attributes() {
+        let saml_xml = r#"<saml2p:Response xmlns:saml2p="urn:oasis:names:tc:SAML:2.0:protocol">
+            <saml2:Assertion xmlns:saml2="urn:oasis:names:tc:SAML:2.0:assertion">
+                <saml2:AttributeStatement>
+                    <saml2:Attribute Name="https://aws.amazon.com/SAML/Attributes/Role">
+                        <saml2:AttributeValue>
+                            arn:aws:iam::123456789012:saml-provider/Okta,arn:aws:iam::123456789012:role/Admin
+                        </saml2:AttributeValue>
+                    </saml2:Attribute>
+                </saml2:AttributeStatement>
+            </saml2:Assertion>
+        </saml2p:Response>"#;
+
+        let b64 = base64::engine::general_purpose::STANDARD.encode(saml_xml);
+        let roles = parse_saml_roles(&b64).unwrap();
+        assert_eq!(roles[0].role_arn, "arn:aws:iam::123456789012:role/Admin");
+    }
+
+    #[test]
     fn parse_saml_roles_bad_base64() {
         assert!(parse_saml_roles("not-valid-base64!!!").is_err());
     }
@@ -326,5 +453,38 @@ mod tests {
     fn sts_client_custom_endpoint() {
         let client = StsClient::with_endpoint("http://localhost:4566");
         assert_eq!(client.endpoint_url, "http://localhost:4566");
+    }
+
+    #[tokio::test]
+    async fn sts_client_timeout_is_bounded() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .and(body_string_contains("Action=AssumeRoleWithSAML"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(200))
+                    .set_body_string("<AssumeRoleWithSAMLResponse />"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = StsClient::with_endpoint_and_timeout(&server.uri(), Duration::from_millis(50));
+        let error = client
+            .assume_role_with_saml(
+                "arn:aws:iam::123456789012:role/TestRole",
+                "arn:aws:iam::123456789012:saml-provider/Okta",
+                "base64-saml-assertion",
+                3600,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(error, Error::Http(_) | Error::Timeout(_)),
+            "unexpected error: {error}"
+        );
     }
 }

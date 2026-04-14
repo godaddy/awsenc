@@ -23,9 +23,7 @@ mod usage;
 use cli::{Cli, Commands};
 
 #[cfg(test)]
-pub(crate) mod test_support {
-    pub(crate) static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-}
+pub(crate) static TEST_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[tokio::main]
 #[allow(clippy::print_stderr)]
@@ -73,14 +71,14 @@ async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
 
         Commands::Use(args) => {
-            let profile = resolve_use_profile(args.profile.as_deref())?;
+            let profile = resolve_interactive_profile(args.profile.as_deref())?;
             let global = config::load_global_config().unwrap_or_default();
             let profile = config::resolve_alias(&profile, &global);
 
             if args.print_profile {
                 println!("{profile}");
             } else {
-                eprintln!("Switched to profile: {profile}");
+                eprintln!("\nSwitched to profile: {profile}");
                 eprintln!("Note: use 'awsenc-use' shell function to set env vars in your shell");
             }
 
@@ -128,26 +126,6 @@ fn resolve_interactive_profile(
     Err("no profile specified and stdin is not a TTY for interactive selection".into())
 }
 
-fn resolve_use_profile(explicit: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
-    if let Some(value) = explicit {
-        if let Ok(rank) = value.parse::<usize>() {
-            let profiles = profile::list_profiles()?;
-            let usage_data = usage::load_usage();
-            let mru = usage::get_mru_profiles(&usage_data, profiles.len());
-            if rank == 0 || rank > mru.len() {
-                return Err(format!(
-                    "MRU rank {rank} is out of range; {} profile(s) in history",
-                    mru.len()
-                )
-                .into());
-            }
-            return Ok(mru[rank - 1].clone());
-        }
-    }
-
-    resolve_interactive_profile(explicit)
-}
-
 fn create_storage(
     biometric: bool,
 ) -> Result<Box<dyn EncryptionStorage>, Box<dyn std::error::Error>> {
@@ -182,31 +160,15 @@ fn resolve_biometric_for_profile(profile: &str, cli_biometric: bool) -> bool {
 }
 
 fn resolve_biometric_from_serve(args: &cli::ServeArgs) -> bool {
-    let profile = args
-        .profile
-        .clone()
-        .or_else(|| std::env::var("AWSENC_PROFILE").ok())
-        .unwrap_or_default();
-
-    if profile.is_empty() {
-        return false;
-    }
-
-    resolve_biometric_for_profile(&profile, false)
+    serve::resolve_serve_profile(args)
+        .map(|profile| resolve_biometric_for_profile(&profile, false))
+        .unwrap_or(false)
 }
 
 fn resolve_biometric_from_exec(args: &cli::ExecArgs) -> bool {
-    let profile = args
-        .resolved_profile()
-        .map(str::to_owned)
-        .or_else(|| std::env::var("AWSENC_PROFILE").ok())
-        .unwrap_or_default();
-
-    if profile.is_empty() {
-        return false;
-    }
-
-    resolve_biometric_for_profile(&profile, false)
+    exec::resolve_exec_profile(args)
+        .map(|profile| resolve_biometric_for_profile(&profile, false))
+        .unwrap_or(false)
 }
 
 #[allow(clippy::print_stderr, clippy::print_stdout)]
@@ -457,35 +419,29 @@ mod tests {
 
     #[test]
     fn resolve_biometric_for_nonexistent_profile() {
-        let _lock = test_support::ENV_MUTEX.lock().expect("mutex poisoned");
+        let _lock = TEST_ENV_MUTEX.lock().expect("mutex poisoned");
         let tmp = tempfile::tempdir().unwrap();
-        let prev = std::env::var("HOME").ok();
-        std::env::set_var("HOME", tmp.path());
+        let (prev_home, prev_userprofile, prev_xdg) = set_test_home(tmp.path());
         let result = resolve_biometric_for_profile("nonexistent-profile-xyz", false);
         assert!(!result);
-        match prev {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
+        restore_test_home(prev_home, prev_userprofile, prev_xdg);
     }
 
     #[test]
     fn resolve_biometric_for_profile_cli_override() {
-        let _lock = test_support::ENV_MUTEX.lock().expect("mutex poisoned");
+        let _lock = TEST_ENV_MUTEX.lock().expect("mutex poisoned");
         let tmp = tempfile::tempdir().unwrap();
-        let prev = std::env::var("HOME").ok();
-        std::env::set_var("HOME", tmp.path());
+        let (prev_home, prev_userprofile, prev_xdg) = set_test_home(tmp.path());
         let result = resolve_biometric_for_profile("nonexistent-profile-xyz", true);
         assert!(result);
-        match prev {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
+        restore_test_home(prev_home, prev_userprofile, prev_xdg);
     }
 
     #[test]
     fn resolve_biometric_from_serve_empty_profile() {
-        let _lock = test_support::ENV_MUTEX.lock().expect("mutex poisoned");
+        let _lock = TEST_ENV_MUTEX.lock().expect("mutex poisoned");
+        let tmp = tempfile::tempdir().unwrap();
+        let (prev_home, prev_userprofile, prev_xdg) = set_test_home(tmp.path());
         let prev = std::env::var("AWSENC_PROFILE").ok();
         std::env::remove_var("AWSENC_PROFILE");
 
@@ -499,11 +455,14 @@ mod tests {
         if let Some(v) = prev {
             std::env::set_var("AWSENC_PROFILE", v);
         }
+        restore_test_home(prev_home, prev_userprofile, prev_xdg);
     }
 
     #[test]
     fn resolve_biometric_from_exec_empty_profile() {
-        let _lock = test_support::ENV_MUTEX.lock().expect("mutex poisoned");
+        let _lock = TEST_ENV_MUTEX.lock().expect("mutex poisoned");
+        let tmp = tempfile::tempdir().unwrap();
+        let (prev_home, prev_userprofile, prev_xdg) = set_test_home(tmp.path());
         let prev = std::env::var("AWSENC_PROFILE").ok();
         std::env::remove_var("AWSENC_PROFILE");
 
@@ -518,14 +477,14 @@ mod tests {
         if let Some(v) = prev {
             std::env::set_var("AWSENC_PROFILE", v);
         }
+        restore_test_home(prev_home, prev_userprofile, prev_xdg);
     }
 
     #[test]
     fn resolve_biometric_from_exec_with_profile() {
-        let _lock = test_support::ENV_MUTEX.lock().expect("mutex poisoned");
+        let _lock = TEST_ENV_MUTEX.lock().expect("mutex poisoned");
         let tmp = tempfile::tempdir().unwrap();
-        let prev = std::env::var("HOME").ok();
-        std::env::set_var("HOME", tmp.path());
+        let (prev_home, prev_userprofile, prev_xdg) = set_test_home(tmp.path());
 
         let args = cli::ExecArgs {
             profile_positional: Some("some-profile".to_string()),
@@ -534,9 +493,85 @@ mod tests {
         };
         let result = resolve_biometric_from_exec(&args);
         assert!(!result);
-        match prev {
-            Some(v) => std::env::set_var("HOME", v),
+        restore_test_home(prev_home, prev_userprofile, prev_xdg);
+    }
+
+    #[test]
+    fn resolve_biometric_from_exec_uses_resolved_alias() {
+        let _lock = TEST_ENV_MUTEX.lock().expect("mutex poisoned");
+        let tmp = tempfile::tempdir().unwrap();
+        let (prev_home, prev_userprofile, prev_xdg) = set_test_home(tmp.path());
+
+        let mut global = config::GlobalConfig::default();
+        global.okta.user = Some("tester@example.com".into());
+        global.aliases.insert("prod".into(), "real-profile".into());
+        let global_toml = toml::to_string_pretty(&global).unwrap();
+        let config_dir = tmp.path().join(".config").join("awsenc");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(config_dir.join("config.toml"), global_toml).unwrap();
+
+        let profile = config::ProfileConfig {
+            okta: config::ProfileOktaConfig {
+                organization: Some("org.okta.com".into()),
+                user: None,
+                application: Some("https://org.okta.com/app".into()),
+                role: Some("arn:aws:iam::123:role/R".into()),
+                factor: None,
+                duration: None,
+            },
+            security: config::ProfileSecurityConfig::default(),
+            region: None,
+            secondary_role: None,
+        };
+        config::save_profile_config("real-profile", &profile).unwrap();
+
+        let prev_bio = std::env::var("AWSENC_BIOMETRIC").ok();
+        let prev_user = std::env::var("AWSENC_OKTA_USER").ok();
+        std::env::set_var("AWSENC_BIOMETRIC", "true");
+        std::env::set_var("AWSENC_OKTA_USER", "tester@example.com");
+        let args = cli::ExecArgs {
+            profile_positional: Some("prod".to_string()),
+            profile_flag: None,
+            command: vec!["echo".to_string()],
+        };
+        assert!(resolve_biometric_from_exec(&args));
+        match prev_bio {
+            Some(v) => std::env::set_var("AWSENC_BIOMETRIC", v),
+            None => std::env::remove_var("AWSENC_BIOMETRIC"),
+        }
+        match prev_user {
+            Some(v) => std::env::set_var("AWSENC_OKTA_USER", v),
+            None => std::env::remove_var("AWSENC_OKTA_USER"),
+        }
+        restore_test_home(prev_home, prev_userprofile, prev_xdg);
+    }
+
+    fn set_test_home(path: &std::path::Path) -> (Option<String>, Option<String>, Option<String>) {
+        let prev_home = std::env::var("HOME").ok();
+        let prev_userprofile = std::env::var("USERPROFILE").ok();
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        std::env::set_var("HOME", path);
+        std::env::set_var("USERPROFILE", path);
+        std::env::set_var("XDG_CONFIG_HOME", path.join(".config"));
+        (prev_home, prev_userprofile, prev_xdg)
+    }
+
+    fn restore_test_home(
+        prev_home: Option<String>,
+        prev_userprofile: Option<String>,
+        prev_xdg: Option<String>,
+    ) {
+        match prev_home {
+            Some(value) => std::env::set_var("HOME", value),
             None => std::env::remove_var("HOME"),
+        }
+        match prev_userprofile {
+            Some(value) => std::env::set_var("USERPROFILE", value),
+            None => std::env::remove_var("USERPROFILE"),
+        }
+        match prev_xdg {
+            Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
         }
     }
 }

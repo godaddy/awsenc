@@ -30,6 +30,12 @@ pub async fn run_exec(args: &ExecArgs, storage: &dyn EncryptionStorage) -> Resul
     let creds = if let Some(c) = cached {
         c
     } else {
+        if !std::io::stdin().is_terminal() {
+            return Err(
+                "no cached credentials and stdin is not a TTY; run 'awsenc auth --pass-stdin' first"
+                    .into(),
+            );
+        }
         eprintln!("No cached credentials for '{profile}', authenticating...");
         let auth_args = AuthArgs {
             profile_positional: Some(profile.to_owned()),
@@ -77,7 +83,7 @@ pub async fn run_exec(args: &ExecArgs, storage: &dyn EncryptionStorage) -> Resul
     std::process::exit(status.code().unwrap_or(1));
 }
 
-fn resolve_exec_profile(args: &ExecArgs) -> Result<String> {
+pub(crate) fn resolve_exec_profile(args: &ExecArgs) -> Result<String> {
     if let Some(p) = args.resolved_profile() {
         let global = config::load_global_config().unwrap_or_default();
         return Ok(config::resolve_alias(p, &global));
@@ -143,32 +149,36 @@ mod tests {
     use super::*;
     use enclaveapp_app_storage::mock::MockEncryptionStorage as MockStorage;
 
-    fn setup_temp_home(tmp: &tempfile::TempDir) -> Option<String> {
+    fn setup_temp_home(tmp: &tempfile::TempDir) -> (Option<String>, Option<String>) {
         let prev = std::env::var("HOME").ok();
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
         let config_dir = tmp.path().join(".config").join("awsenc");
         std::fs::create_dir_all(&config_dir).unwrap();
         std::env::set_var("HOME", tmp.path());
-        prev
+        std::env::set_var("XDG_CONFIG_HOME", tmp.path().join(".config"));
+        (prev, prev_xdg)
     }
 
-    fn restore_home(prev: Option<String>) {
+    fn restore_home(prev: Option<String>, prev_xdg: Option<String>) {
         match prev {
             Some(v) => std::env::set_var("HOME", v),
             None => std::env::remove_var("HOME"),
+        }
+        match prev_xdg {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
         }
     }
 
     #[test]
     fn get_cached_credentials_returns_none_when_no_cache() {
-        let _lock = crate::test_support::ENV_MUTEX
-            .lock()
-            .expect("mutex poisoned");
+        let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
         let tmp = tempfile::tempdir().unwrap();
-        let prev = setup_temp_home(&tmp);
+        let (prev, prev_xdg) = setup_temp_home(&tmp);
         let storage = MockStorage::new();
         let result = get_cached_credentials("nonexistent-profile-xyz", &storage).unwrap();
         assert!(result.is_none());
-        restore_home(prev);
+        restore_home(prev, prev_xdg);
     }
 
     #[test]
@@ -176,11 +186,9 @@ mod tests {
         use awsenc_core::cache::{self, CacheFile, CacheHeader, FORMAT_VERSION, MAGIC};
         use zeroize::Zeroizing;
 
-        let _lock = crate::test_support::ENV_MUTEX
-            .lock()
-            .expect("mutex poisoned");
+        let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
         let tmp = tempfile::tempdir().unwrap();
-        let prev = setup_temp_home(&tmp);
+        let (prev, prev_xdg) = setup_temp_home(&tmp);
         let storage = MockStorage::new();
 
         let creds = AwsCredentials {
@@ -215,7 +223,7 @@ mod tests {
         assert_eq!(recovered.access_key_id, "AKIATEST");
 
         drop(cache::delete_cache(profile));
-        restore_home(prev);
+        restore_home(prev, prev_xdg);
     }
 
     #[test]
@@ -223,11 +231,9 @@ mod tests {
         use awsenc_core::cache::{self, CacheFile, CacheHeader, FORMAT_VERSION, MAGIC};
         use zeroize::Zeroizing;
 
-        let _lock = crate::test_support::ENV_MUTEX
-            .lock()
-            .expect("mutex poisoned");
+        let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
         let tmp = tempfile::tempdir().unwrap();
-        let prev = setup_temp_home(&tmp);
+        let (prev, prev_xdg) = setup_temp_home(&tmp);
         let storage = MockStorage::new();
 
         let creds = AwsCredentials {
@@ -263,7 +269,7 @@ mod tests {
         );
 
         drop(cache::delete_cache(profile));
-        restore_home(prev);
+        restore_home(prev, prev_xdg);
     }
 
     #[test]
@@ -298,14 +304,11 @@ mod tests {
 
     #[test]
     fn get_profile_region_returns_none_for_nonexistent() {
-        let _lock = crate::test_support::ENV_MUTEX
-            .lock()
-            .expect("mutex poisoned");
+        let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
         let tmp = tempfile::tempdir().unwrap();
-        let prev = std::env::var("HOME").ok();
-        std::env::set_var("HOME", tmp.path());
+        let (prev, prev_xdg) = setup_temp_home(&tmp);
         assert!(get_profile_region("nonexistent-profile").is_none());
-        restore_home(prev);
+        restore_home(prev, prev_xdg);
     }
 
     #[tokio::test]
@@ -323,5 +326,19 @@ mod tests {
             err.contains("no command"),
             "expected 'no command' error, got: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn run_exec_without_cache_fails_fast_when_stdin_is_not_tty() {
+        let storage = MockStorage::new();
+        let args = ExecArgs {
+            profile_positional: Some("test".to_string()),
+            profile_flag: None,
+            command: vec!["echo".to_string(), "hello".to_string()],
+        };
+        let result = run_exec(&args, &storage).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("stdin is not a TTY"));
     }
 }

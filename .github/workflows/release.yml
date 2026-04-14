@@ -13,11 +13,11 @@ jobs:
     with:
       app_name: awsenc
       targets: '["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu", "aarch64-pc-windows-msvc", "x86_64-unknown-linux-musl"]'
-      linux_deps: "libdbus-1-dev pkg-config"
+      linux_deps: "libdbus-1-dev pkg-config libtss2-dev"
       unix_binaries: "awsenc"
       windows_binaries: "awsenc.exe awsenc-tpm-bridge.exe"
       wix_file: "installer/awsenc.wxs"
-      cargo_build_args: "--features awsenc-secure-storage/mock"
+      cargo_build_args: ""
       homebrew: '{"tap_repo":"godaddy/homebrew-awsenc","formula_class":"Awsenc","description":"Hardware-backed AWS credential manager using Secure Enclave / TPM"}'
       scoop: '{"bucket_repo":"godaddy/scoop-awsenc","description":"Hardware-backed AWS credential manager (Windows TPM 2.0)","has_winget":true}'
     secrets:
