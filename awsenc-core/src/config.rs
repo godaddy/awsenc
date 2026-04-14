@@ -125,12 +125,25 @@ pub struct ResolvedConfig {
 // Directory helpers
 // ---------------------------------------------------------------------------
 
+fn config_root_dir() -> Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("XDG_CONFIG_HOME") {
+        let path = PathBuf::from(dir);
+        if !path.is_absolute() {
+            return Err(Error::Config(
+                "XDG_CONFIG_HOME must be an absolute path".into(),
+            ));
+        }
+        return Ok(path);
+    }
+
+    Ok(dirs::home_dir()
+        .ok_or_else(|| Error::Config("could not determine home directory".into()))?
+        .join(".config"))
+}
+
 /// Returns `~/.config/awsenc/`, creating it with 0o700 permissions if necessary.
 pub fn config_dir() -> Result<PathBuf> {
-    let dir = dirs::home_dir()
-        .ok_or_else(|| Error::Config("could not determine home directory".into()))?
-        .join(".config")
-        .join("awsenc");
+    let dir = config_root_dir()?.join("awsenc");
     ensure_dir(&dir)?;
     Ok(dir)
 }
@@ -328,6 +341,7 @@ mod tests {
 
     #[test]
     fn config_overrides_from_env_empty() {
+        let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
         // Clear relevant env vars to test defaults
         std::env::remove_var("AWSENC_OKTA_USER");
         std::env::remove_var("AWSENC_OKTA_ORG");
@@ -575,13 +589,47 @@ mod tests {
 
     #[test]
     fn config_dir_returns_path() {
+        let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
         // Just verify it produces a path without error
         let dir = config_dir().unwrap();
         assert!(dir.ends_with("awsenc"));
     }
 
     #[test]
+    fn config_dir_uses_xdg_config_home_when_set() {
+        let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
+        let tmp = tempfile::tempdir().unwrap();
+        let xdg_dir = tmp.path().join("xdg");
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        std::env::set_var("XDG_CONFIG_HOME", &xdg_dir);
+
+        let dir = config_dir().unwrap();
+        assert_eq!(dir, xdg_dir.join("awsenc"));
+
+        match prev_xdg {
+            Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+    }
+
+    #[test]
+    fn config_dir_rejects_relative_xdg_config_home() {
+        let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        std::env::set_var("XDG_CONFIG_HOME", "relative-config");
+
+        let error = config_dir().unwrap_err().to_string();
+        assert!(error.contains("XDG_CONFIG_HOME"));
+
+        match prev_xdg {
+            Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+    }
+
+    #[test]
     fn profiles_dir_returns_path() {
+        let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
         let dir = profiles_dir().unwrap();
         assert!(dir.ends_with("profiles"));
     }
@@ -598,6 +646,7 @@ mod tests {
 
     #[test]
     fn config_overrides_from_env_reads_region() {
+        let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
         std::env::set_var("AWSENC_REGION", "ap-southeast-2");
         let overrides = ConfigOverrides::from_env();
         std::env::remove_var("AWSENC_REGION");

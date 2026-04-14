@@ -117,11 +117,13 @@ mod tests {
 
     #[test]
     fn profile_exists_returns_false_for_missing() {
+        let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
         assert!(!profile_exists("nonexistent-profile-xyz-12345"));
     }
 
     #[test]
     fn list_profiles_returns_empty_for_new_install() {
+        let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
         // This test relies on the profiles directory existing but potentially
         // being empty. It should at minimum not error.
         let result = list_profiles();
@@ -150,7 +152,9 @@ mod tests {
         let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
         let tmp = tempfile::tempdir().unwrap();
         let prev_home = std::env::var("HOME").ok();
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
         std::env::set_var("HOME", tmp.path());
+        std::env::set_var("XDG_CONFIG_HOME", tmp.path().join(".config"));
 
         // Create a temp profile, verify it exists, then clean up
         let name = "test-roundtrip-profile-awsenc";
@@ -181,10 +185,15 @@ mod tests {
             Some(v) => std::env::set_var("HOME", v),
             None => std::env::remove_var("HOME"),
         }
+        match prev_xdg {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
     }
 
     #[test]
     fn delete_nonexistent_profile_errors() {
+        let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
         let result = delete_profile("definitely-does-not-exist-xyz");
         assert!(result.is_err());
     }

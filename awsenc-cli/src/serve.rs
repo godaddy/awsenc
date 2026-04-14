@@ -220,6 +220,7 @@ mod tests {
 
     #[test]
     fn resolve_serve_profile_no_profile_no_active_no_env() {
+        let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
         let prev = std::env::var("AWSENC_PROFILE").ok();
         std::env::remove_var("AWSENC_PROFILE");
 
@@ -242,6 +243,7 @@ mod tests {
 
     #[test]
     fn resolve_serve_profile_active_flag_without_env() {
+        let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
         let prev = std::env::var("AWSENC_PROFILE").ok();
         std::env::remove_var("AWSENC_PROFILE");
 

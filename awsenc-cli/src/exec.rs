@@ -149,18 +149,24 @@ mod tests {
     use super::*;
     use enclaveapp_app_storage::mock::MockEncryptionStorage as MockStorage;
 
-    fn setup_temp_home(tmp: &tempfile::TempDir) -> Option<String> {
+    fn setup_temp_home(tmp: &tempfile::TempDir) -> (Option<String>, Option<String>) {
         let prev = std::env::var("HOME").ok();
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
         let config_dir = tmp.path().join(".config").join("awsenc");
         std::fs::create_dir_all(&config_dir).unwrap();
         std::env::set_var("HOME", tmp.path());
-        prev
+        std::env::set_var("XDG_CONFIG_HOME", tmp.path().join(".config"));
+        (prev, prev_xdg)
     }
 
-    fn restore_home(prev: Option<String>) {
+    fn restore_home(prev: Option<String>, prev_xdg: Option<String>) {
         match prev {
             Some(v) => std::env::set_var("HOME", v),
             None => std::env::remove_var("HOME"),
+        }
+        match prev_xdg {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
         }
     }
 
@@ -168,11 +174,11 @@ mod tests {
     fn get_cached_credentials_returns_none_when_no_cache() {
         let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
         let tmp = tempfile::tempdir().unwrap();
-        let prev = setup_temp_home(&tmp);
+        let (prev, prev_xdg) = setup_temp_home(&tmp);
         let storage = MockStorage::new();
         let result = get_cached_credentials("nonexistent-profile-xyz", &storage).unwrap();
         assert!(result.is_none());
-        restore_home(prev);
+        restore_home(prev, prev_xdg);
     }
 
     #[test]
@@ -182,7 +188,7 @@ mod tests {
 
         let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
         let tmp = tempfile::tempdir().unwrap();
-        let prev = setup_temp_home(&tmp);
+        let (prev, prev_xdg) = setup_temp_home(&tmp);
         let storage = MockStorage::new();
 
         let creds = AwsCredentials {
@@ -217,7 +223,7 @@ mod tests {
         assert_eq!(recovered.access_key_id, "AKIATEST");
 
         drop(cache::delete_cache(profile));
-        restore_home(prev);
+        restore_home(prev, prev_xdg);
     }
 
     #[test]
@@ -227,7 +233,7 @@ mod tests {
 
         let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
         let tmp = tempfile::tempdir().unwrap();
-        let prev = setup_temp_home(&tmp);
+        let (prev, prev_xdg) = setup_temp_home(&tmp);
         let storage = MockStorage::new();
 
         let creds = AwsCredentials {
@@ -263,7 +269,7 @@ mod tests {
         );
 
         drop(cache::delete_cache(profile));
-        restore_home(prev);
+        restore_home(prev, prev_xdg);
     }
 
     #[test]
@@ -298,9 +304,11 @@ mod tests {
 
     #[test]
     fn get_profile_region_returns_none_for_nonexistent() {
+        let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
         let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("HOME", tmp.path());
+        let (prev, prev_xdg) = setup_temp_home(&tmp);
         assert!(get_profile_region("nonexistent-profile").is_none());
+        restore_home(prev, prev_xdg);
     }
 
     #[tokio::test]

@@ -393,7 +393,9 @@ mod tests {
         let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
         let dir = tempfile::tempdir().unwrap();
         let prev_home = std::env::var("HOME").ok();
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
         std::env::set_var("HOME", dir.path());
+        std::env::set_var("XDG_CONFIG_HOME", dir.path().join(".config"));
         let path = cache_path("tmp-test").unwrap();
         let temp_path = path.parent().unwrap().join(".tmp-test.enc.tmp");
         std::fs::write(&temp_path, b"stale").unwrap();
@@ -416,6 +418,10 @@ mod tests {
         match prev_home {
             Some(v) => std::env::set_var("HOME", v),
             None => std::env::remove_var("HOME"),
+        }
+        match prev_xdg {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
         }
     }
 
