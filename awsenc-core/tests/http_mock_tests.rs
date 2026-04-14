@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use wiremock::matchers::{body_string_contains, header, method, path, path_regex};
+use wiremock::matchers::{body_string_contains, header, method, path, path_regex, query_param};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 use zeroize::Zeroizing;
 
@@ -335,6 +335,7 @@ async fn okta_saml_assertion_extraction() {
 
     Mock::given(method("GET"))
         .and(path("/home/amazon_aws/0oa123abc/272"))
+        .and(query_param("sessionToken", "session-for-saml"))
         .respond_with(ResponseTemplate::new(200).set_body_string(saml_html))
         .expect(1)
         .mount(&server)

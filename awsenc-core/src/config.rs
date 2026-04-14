@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use enclaveapp_core::metadata;
 use serde::{Deserialize, Serialize};
 
+use crate::okta::validate_okta_application_url;
 use crate::{Error, Result};
 
 // ---------------------------------------------------------------------------
@@ -264,6 +265,7 @@ pub fn resolve_config(
         .clone()
         .or_else(|| profile.okta.application.clone())
         .ok_or_else(|| Error::MissingConfig("okta application URL".into()))?;
+    let okta_application = validate_okta_application_url(&okta_organization, &okta_application)?;
 
     let okta_role = overrides
         .role
@@ -375,7 +377,9 @@ mod tests {
         let profile = ProfileConfig {
             okta: ProfileOktaConfig {
                 organization: None,
-                application: Some("https://org.okta.com/home/amazon_aws/0oa123/272".into()),
+                application: Some(
+                    "https://global-org.okta.com/home/amazon_aws/0oa123/272".into(),
+                ),
                 role: Some("arn:aws:iam::123456789012:role/MyRole".into()),
                 factor: Some("yubikey".into()),
                 duration: Some(7200),
@@ -410,7 +414,7 @@ mod tests {
         let profile = ProfileConfig {
             okta: ProfileOktaConfig {
                 organization: None,
-                application: Some("https://org.okta.com/app".into()),
+                application: Some("https://global-org.okta.com/app".into()),
                 role: Some("arn:aws:iam::123:role/R".into()),
                 factor: Some("yubikey".into()),
                 duration: None,
@@ -440,6 +444,58 @@ mod tests {
 
         let result = resolve_config("test", &global, &profile, &overrides);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolve_config_rejects_cross_origin_okta_application() {
+        let global = GlobalConfig {
+            okta: OktaConfig {
+                organization: Some("global-org.okta.com".into()),
+                user: Some("globaluser".into()),
+                default_factor: None,
+            },
+            ..Default::default()
+        };
+        let profile = ProfileConfig {
+            okta: ProfileOktaConfig {
+                organization: None,
+                application: Some("https://evil.example.com/home/app".into()),
+                role: Some("arn:aws:iam::123:role/R".into()),
+                factor: None,
+                duration: None,
+            },
+            ..Default::default()
+        };
+
+        let error = resolve_config("test", &global, &profile, &ConfigOverrides::default())
+            .unwrap_err();
+        assert!(error.to_string().contains("must match Okta organization origin"));
+    }
+
+    #[test]
+    fn resolve_config_rejects_cleartext_okta_application() {
+        let global = GlobalConfig {
+            okta: OktaConfig {
+                organization: Some("global-org.okta.com".into()),
+                user: Some("globaluser".into()),
+                default_factor: None,
+            },
+            ..Default::default()
+        };
+        let profile = ProfileConfig {
+            okta: ProfileOktaConfig {
+                organization: None,
+                application: Some("http://global-org.okta.com/home/app".into()),
+                role: Some("arn:aws:iam::123:role/R".into()),
+                factor: None,
+                duration: None,
+            },
+            ..Default::default()
+        };
+
+        let error = resolve_config("test", &global, &profile, &ConfigOverrides::default())
+            .unwrap_err();
+        assert!(error.to_string().contains("must use HTTPS"));
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use base64::Engine;
 use chrono::{DateTime, Utc};
 use roxmltree::{Document, Node};
+use std::time::Duration;
 use tracing::debug;
 use zeroize::Zeroizing;
 
@@ -21,19 +22,22 @@ pub struct StsClient {
     endpoint_url: String,
 }
 
+const STS_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+
 impl StsClient {
     /// Create a new STS client with the default endpoint.
     pub fn new() -> Self {
-        Self {
-            client: reqwest::Client::new(),
-            endpoint_url: "https://sts.amazonaws.com".to_owned(),
-        }
+        Self::with_endpoint_and_timeout("https://sts.amazonaws.com", STS_HTTP_TIMEOUT)
     }
 
     /// Create a new STS client with a custom endpoint URL (for testing).
     pub fn with_endpoint(endpoint_url: &str) -> Self {
+        Self::with_endpoint_and_timeout(endpoint_url, STS_HTTP_TIMEOUT)
+    }
+
+    fn with_endpoint_and_timeout(endpoint_url: &str, timeout: Duration) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: build_sts_http_client(timeout),
             endpoint_url: endpoint_url.to_owned(),
         }
     }
@@ -84,6 +88,13 @@ impl Default for StsClient {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn build_sts_http_client(timeout: Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(timeout)
+        .build()
+        .expect("failed to build STS HTTP client")
 }
 
 /// Parse the `AssumeRoleWithSAML` XML response into `AwsCredentials`.
@@ -198,6 +209,8 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+    use wiremock::matchers::{body_string_contains, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn extract_xml_tag_found() {
@@ -374,5 +387,38 @@ mod tests {
     fn sts_client_custom_endpoint() {
         let client = StsClient::with_endpoint("http://localhost:4566");
         assert_eq!(client.endpoint_url, "http://localhost:4566");
+    }
+
+    #[tokio::test]
+    async fn sts_client_timeout_is_bounded() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .and(body_string_contains("Action=AssumeRoleWithSAML"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(200))
+                    .set_body_string("<AssumeRoleWithSAMLResponse />"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = StsClient::with_endpoint_and_timeout(&server.uri(), Duration::from_millis(50));
+        let error = client
+            .assume_role_with_saml(
+                "arn:aws:iam::123456789012:role/TestRole",
+                "arn:aws:iam::123456789012:saml-provider/Okta",
+                "base64-saml-assertion",
+                3600,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(error, Error::Http(_) | Error::Timeout(_)),
+            "unexpected error: {error}"
+        );
     }
 }
