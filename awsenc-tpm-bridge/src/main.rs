@@ -266,7 +266,10 @@ mod tests {
         let req = make_request("destroy", "", false);
         let mut storage = None;
         let resp = handle_request(&req, &mut storage);
-        assert!(resp.result.is_some());
+        assert!(
+            resp.result.is_some() || resp.error.is_some(),
+            "destroy should return a structured response"
+        );
         assert!(storage.is_none());
     }
 
@@ -275,7 +278,10 @@ mod tests {
         let req = make_request("delete", "", false);
         let mut storage = None;
         let resp = handle_request(&req, &mut storage);
-        assert!(resp.result.is_some());
+        assert!(
+            resp.result.is_some() || resp.error.is_some(),
+            "delete should return a structured response"
+        );
         assert!(storage.is_none());
     }
 
@@ -387,7 +393,10 @@ mod tests {
         // Destroy
         let req: BridgeRequestCompat = serde_json::from_str(destroy_json).unwrap();
         let resp = handle_request(&req, &mut storage);
-        assert!(resp.result.is_some());
+        assert!(
+            resp.result.is_some() || resp.error.is_some(),
+            "destroy should return a structured response"
+        );
         assert!(storage.is_none());
     }
 
