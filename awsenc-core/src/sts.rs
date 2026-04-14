@@ -149,8 +149,7 @@ pub fn parse_saml_roles(saml_assertion: &str) -> Result<Vec<SamlRole>> {
     for attribute in doc.descendants().filter(|node| {
         node.is_element()
             && node.tag_name().name() == "Attribute"
-            && node.attribute("Name")
-                == Some("https://aws.amazon.com/SAML/Attributes/Role")
+            && node.attribute("Name") == Some("https://aws.amazon.com/SAML/Attributes/Role")
     }) {
         found_role_attribute = true;
         for value_node in attribute
@@ -184,7 +183,9 @@ pub fn parse_saml_roles(saml_assertion: &str) -> Result<Vec<SamlRole>> {
     }
 
     if !found_role_attribute {
-        return Err(Error::Saml("no Role attribute found in SAML assertion".into()));
+        return Err(Error::Saml(
+            "no Role attribute found in SAML assertion".into(),
+        ));
     }
 
     if roles.is_empty() {
@@ -196,7 +197,10 @@ pub fn parse_saml_roles(saml_assertion: &str) -> Result<Vec<SamlRole>> {
 
 fn text_content<'input>(node: Node<'input, 'input>) -> Option<&'input str> {
     node.text().or_else(|| {
-        if node.children().all(|child| !child.is_text() && !child.is_element()) {
+        if node
+            .children()
+            .all(|child| !child.is_text() && !child.is_element())
+        {
             Some("")
         } else {
             None
@@ -230,7 +234,10 @@ mod tests {
     #[test]
     fn extract_xml_tag_empty() {
         let xml = "<Root><AccessKeyId></AccessKeyId></Root>";
-        assert_eq!(find_text_by_local_name(xml, "AccessKeyId"), Some(String::new()));
+        assert_eq!(
+            find_text_by_local_name(xml, "AccessKeyId"),
+            Some(String::new())
+        );
     }
 
     #[test]

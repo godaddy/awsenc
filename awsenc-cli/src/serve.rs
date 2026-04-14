@@ -116,8 +116,8 @@ fn decrypt_aws_credentials(
 fn print_credentials(creds: &AwsCredentials) -> Result<()> {
     let output = CredentialProcessOutput::from_credentials(creds);
     // This is the ONLY thing that goes to stdout
-    let json =
-        serde_json::to_string(&output).map_err(|e| format!("credential JSON serialization failed: {e}"))?;
+    let json = serde_json::to_string(&output)
+        .map_err(|e| format!("credential JSON serialization failed: {e}"))?;
     println!("{json}");
     Ok(())
 }
@@ -300,7 +300,8 @@ mod tests {
             session_token: Zeroizing::new("token".to_string()),
             expiration: Utc::now(),
         };
-        let json = serde_json::to_string(&CredentialProcessOutput::from_credentials(&creds)).unwrap();
+        let json =
+            serde_json::to_string(&CredentialProcessOutput::from_credentials(&creds)).unwrap();
         assert!(json.contains("AKIDTEST"));
         assert!(json.contains("Version"));
     }

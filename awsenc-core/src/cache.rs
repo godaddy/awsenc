@@ -395,10 +395,7 @@ mod tests {
         let prev_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", dir.path());
         let path = cache_path("tmp-test").unwrap();
-        let temp_path = path
-            .parent()
-            .unwrap()
-            .join(".tmp-test.enc.tmp");
+        let temp_path = path.parent().unwrap().join(".tmp-test.enc.tmp");
         std::fs::write(&temp_path, b"stale").unwrap();
 
         let cache = CacheFile {
