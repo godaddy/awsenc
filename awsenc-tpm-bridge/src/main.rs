@@ -4,19 +4,60 @@
 mod tpm;
 
 use base64::prelude::*;
-use enclaveapp_bridge::{BridgeRequest, BridgeResponse};
+use enclaveapp_bridge::BridgeResponse;
+use serde::Deserialize;
 use std::io::{self, BufRead, Write};
 
+const DEFAULT_APP_NAME: &str = "awsenc";
+const DEFAULT_KEY_LABEL: &str = "cache-key";
+
+#[derive(Debug, Deserialize)]
+struct BridgeRequestCompat {
+    method: String,
+    #[serde(default)]
+    params: BridgeParamsCompat,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct BridgeParamsCompat {
+    #[serde(default)]
+    data: String,
+    #[serde(default)]
+    biometric: bool,
+    #[serde(default)]
+    app_name: String,
+    #[serde(default)]
+    key_label: String,
+}
+
+impl BridgeParamsCompat {
+    fn app_name(&self) -> &str {
+        if self.app_name.is_empty() {
+            DEFAULT_APP_NAME
+        } else {
+            &self.app_name
+        }
+    }
+
+    fn key_label(&self) -> &str {
+        if self.key_label.is_empty() {
+            DEFAULT_KEY_LABEL
+        } else {
+            &self.key_label
+        }
+    }
+}
+
 fn handle_request(
-    request: &BridgeRequest,
+    request: &BridgeRequestCompat,
     storage: &mut Option<tpm::TpmStorage>,
 ) -> BridgeResponse {
     match request.method.as_str() {
         "init" => {
             let biometric = request.params.biometric;
             match tpm::TpmStorage::new(
-                &request.params.app_name,
-                &request.params.key_label,
+                request.params.app_name(),
+                request.params.key_label(),
                 biometric,
             ) {
                 Ok(s) => {
@@ -63,7 +104,7 @@ fn handle_request(
             }
         }
         "destroy" | "delete" => {
-            match tpm::TpmStorage::delete(&request.params.app_name, &request.params.key_label) {
+            match tpm::TpmStorage::delete(request.params.app_name(), request.params.key_label()) {
                 Ok(()) => {
                     *storage = None;
                     BridgeResponse::success("ok")
@@ -96,7 +137,7 @@ fn main() {
             continue;
         }
 
-        let response = match serde_json::from_str::<BridgeRequest>(&line) {
+        let response = match serde_json::from_str::<BridgeRequestCompat>(&line) {
             Ok(req) => handle_request(&req, &mut storage),
             Err(e) => BridgeResponse::error(&format!("invalid JSON: {e}")),
         };
@@ -117,16 +158,15 @@ fn main() {
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
-    use enclaveapp_bridge::BridgeParams;
 
-    fn make_request(method: &str, data: &str, biometric: bool) -> BridgeRequest {
-        BridgeRequest {
+    fn make_request(method: &str, data: &str, biometric: bool) -> BridgeRequestCompat {
+        BridgeRequestCompat {
             method: method.to_string(),
-            params: BridgeParams {
+            params: BridgeParamsCompat {
                 data: data.to_string(),
                 biometric,
-                app_name: "awsenc".to_string(),
-                key_label: "cache-key".to_string(),
+                app_name: DEFAULT_APP_NAME.to_string(),
+                key_label: DEFAULT_KEY_LABEL.to_string(),
             },
         }
     }
@@ -134,26 +174,28 @@ mod tests {
     #[test]
     fn parse_init_request() {
         let json = r#"{"method": "init", "params": {"biometric": false}}"#;
-        let req: BridgeRequest = serde_json::from_str(json).unwrap();
+        let req: BridgeRequestCompat = serde_json::from_str(json).unwrap();
         assert_eq!(req.method, "init");
         assert!(!req.params.biometric);
-        assert_eq!(req.params.key_label, "");
+        assert_eq!(req.params.app_name(), DEFAULT_APP_NAME);
+        assert_eq!(req.params.key_label(), DEFAULT_KEY_LABEL);
     }
 
     #[test]
     fn parse_init_request_defaults() {
         let json = r#"{"method": "init", "params": {}}"#;
-        let req: BridgeRequest = serde_json::from_str(json).unwrap();
+        let req: BridgeRequestCompat = serde_json::from_str(json).unwrap();
         assert_eq!(req.method, "init");
         assert!(!req.params.biometric);
         assert!(req.params.data.is_empty());
-        assert!(req.params.key_label.is_empty());
+        assert_eq!(req.params.app_name(), DEFAULT_APP_NAME);
+        assert_eq!(req.params.key_label(), DEFAULT_KEY_LABEL);
     }
 
     #[test]
     fn parse_encrypt_request() {
         let json = r#"{"method": "encrypt", "params": {"data": "aGVsbG8=", "biometric": false}}"#;
-        let req: BridgeRequest = serde_json::from_str(json).unwrap();
+        let req: BridgeRequestCompat = serde_json::from_str(json).unwrap();
         assert_eq!(req.method, "encrypt");
         assert_eq!(req.params.data, "aGVsbG8=");
     }
@@ -161,7 +203,7 @@ mod tests {
     #[test]
     fn parse_decrypt_request() {
         let json = r#"{"method": "decrypt", "params": {"data": "Y2lwaGVy"}}"#;
-        let req: BridgeRequest = serde_json::from_str(json).unwrap();
+        let req: BridgeRequestCompat = serde_json::from_str(json).unwrap();
         assert_eq!(req.method, "decrypt");
         assert_eq!(req.params.data, "Y2lwaGVy");
     }
@@ -169,16 +211,26 @@ mod tests {
     #[test]
     fn parse_destroy_request() {
         let json = r#"{"method": "destroy", "params": {}}"#;
-        let req: BridgeRequest = serde_json::from_str(json).unwrap();
+        let req: BridgeRequestCompat = serde_json::from_str(json).unwrap();
         assert_eq!(req.method, "destroy");
+        assert_eq!(req.params.app_name(), DEFAULT_APP_NAME);
+        assert_eq!(req.params.key_label(), DEFAULT_KEY_LABEL);
     }
 
     #[test]
     fn parse_delete_request() {
         let json = r#"{"method": "delete", "params": {"key_label": "cache-key"}}"#;
-        let req: BridgeRequest = serde_json::from_str(json).unwrap();
+        let req: BridgeRequestCompat = serde_json::from_str(json).unwrap();
         assert_eq!(req.method, "delete");
-        assert_eq!(req.params.key_label, "cache-key");
+        assert_eq!(req.params.key_label(), DEFAULT_KEY_LABEL);
+    }
+
+    #[test]
+    fn parse_request_uses_binary_defaults_for_legacy_payloads() {
+        let json = r#"{"method":"init","params":{"biometric":true}}"#;
+        let req: BridgeRequestCompat = serde_json::from_str(json).unwrap();
+        assert_eq!(req.params.app_name(), DEFAULT_APP_NAME);
+        assert_eq!(req.params.key_label(), DEFAULT_KEY_LABEL);
     }
 
     #[test]
@@ -315,7 +367,7 @@ mod tests {
         let mut storage = None;
 
         // Init
-        let req: BridgeRequest = serde_json::from_str(init_json).unwrap();
+        let req: BridgeRequestCompat = serde_json::from_str(init_json).unwrap();
         let resp = handle_request(&req, &mut storage);
         let resp_json = serde_json::to_string(&resp).unwrap();
         assert!(
@@ -324,7 +376,7 @@ mod tests {
         );
 
         // Encrypt (will fail on non-Windows, which is expected)
-        let req: BridgeRequest = serde_json::from_str(encrypt_json).unwrap();
+        let req: BridgeRequestCompat = serde_json::from_str(encrypt_json).unwrap();
         let resp = handle_request(&req, &mut storage);
         let resp_json = serde_json::to_string(&resp).unwrap();
         assert!(
@@ -333,7 +385,7 @@ mod tests {
         );
 
         // Destroy
-        let req: BridgeRequest = serde_json::from_str(destroy_json).unwrap();
+        let req: BridgeRequestCompat = serde_json::from_str(destroy_json).unwrap();
         let resp = handle_request(&req, &mut storage);
         assert!(resp.result.is_some());
         assert!(storage.is_none());
@@ -342,7 +394,7 @@ mod tests {
     #[test]
     fn invalid_json_produces_error() {
         let bad_json = "this is not json";
-        let result = serde_json::from_str::<BridgeRequest>(bad_json);
+        let result = serde_json::from_str::<BridgeRequestCompat>(bad_json);
         assert!(result.is_err());
     }
 }
