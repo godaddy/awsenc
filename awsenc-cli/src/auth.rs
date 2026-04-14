@@ -26,6 +26,8 @@ pub async fn run_auth(
     args: &AuthArgs,
     storage: &dyn EncryptionStorage,
 ) -> Result<()> {
+    ensure_supported_auth_flags(args)?;
+
     let global = config::load_global_config()?;
     let Ok(profile_config) = config::load_profile_config(profile) else {
         return Err(format!(
@@ -71,6 +73,16 @@ pub async fn run_auth(
         .num_minutes();
     eprintln!("Authenticated profile '{profile}' (expires in {remaining}m)");
 
+    Ok(())
+}
+
+fn ensure_supported_auth_flags(args: &AuthArgs) -> Result<()> {
+    if args.no_open {
+        return Err(
+            "--no-open is reserved for a future browser-based WebAuthn flow and is not supported yet"
+                .into(),
+        );
+    }
     Ok(())
 }
 
@@ -263,6 +275,14 @@ mod tests {
         assert!(overrides.factor.is_none());
         assert!(overrides.duration.is_none());
         assert!(overrides.biometric.is_none() || overrides.biometric == Some(false));
+    }
+
+    #[test]
+    fn no_open_is_rejected_until_browser_flow_exists() {
+        let mut args = default_auth_args();
+        args.no_open = true;
+        let err = ensure_supported_auth_flags(&args).unwrap_err();
+        assert!(err.to_string().contains("--no-open"));
     }
 
     #[test]

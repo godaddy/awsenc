@@ -727,6 +727,9 @@ fmt:        cargo fmt --all -- --check
 clean:      cargo clean
 ```
 
+This source tree currently builds from the enclosing `libenclaveapp`
+checkout because the workspace depends on sibling crates under `../crates/`.
+
 ### Dependencies
 
 | Crate | Purpose |
@@ -804,7 +807,13 @@ Optional migration helper:
 awsenc migrate
 ```
 
-Scans `~/.aws/config` and `~/.aws/credentials` for `credential_process=aws-okta-processor` entries, parses their flags, and generates equivalent `awsenc` profile configs. Writes the new config files, comments out the original `credential_process` lines, and updates `~/.aws/config` with `credential_process=awsenc serve` directives. Profiles using `--secondary-role` are skipped with an explicit warning.
+Scans `~/.aws/config` and `~/.aws/credentials` for
+`credential_process=aws-okta-processor` entries, parses their flags, and
+generates equivalent `awsenc` profile configs. It comments out the original
+live `credential_process` lines in `~/.aws/config` and updates
+`~/.aws/config` with `credential_process=awsenc serve` directives. Entries in
+`~/.aws/credentials` are inspected for discovery but are not rewritten.
+Profiles using `--secondary-role` are skipped with an explicit warning.
 
 ---
 
