@@ -61,9 +61,6 @@ pub enum Error {
     #[error("base64 decode error: {0}")]
     Base64(#[from] base64::DecodeError),
 
-    #[error("regex error: {0}")]
-    Regex(#[from] regex::Error),
-
     #[error("url parse error: {0}")]
     UrlParse(#[from] url::ParseError),
 }

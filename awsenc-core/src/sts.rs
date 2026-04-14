@@ -23,6 +23,7 @@ pub struct StsClient {
 }
 
 const STS_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_STS_RESPONSE_BYTES: usize = 256 * 1024;
 
 impl StsClient {
     /// Create a new STS client with the default endpoint.
@@ -69,7 +70,7 @@ impl StsClient {
             .await?;
 
         let status = resp.status();
-        let body = resp.text().await?;
+        let body = read_response_text(resp, MAX_STS_RESPONSE_BYTES).await?;
 
         if !status.is_success() {
             let error_msg = find_text_by_local_name(&body, "Message")
@@ -97,19 +98,47 @@ fn build_sts_http_client(timeout: Duration) -> reqwest::Client {
         .expect("failed to build STS HTTP client")
 }
 
+async fn read_response_text(mut response: reqwest::Response, max_bytes: usize) -> Result<String> {
+    if let Some(content_length) = response.content_length() {
+        if content_length > max_bytes as u64 {
+            return Err(Error::Sts(format!(
+                "STS response exceeds {max_bytes} bytes"
+            )));
+        }
+    }
+
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        bytes.extend_from_slice(&chunk);
+        if bytes.len() > max_bytes {
+            return Err(Error::Sts(format!(
+                "STS response exceeds {max_bytes} bytes"
+            )));
+        }
+    }
+
+    String::from_utf8(bytes)
+        .map_err(|error| Error::Sts(format!("STS response is not valid UTF-8: {error}")))
+}
+
 /// Parse the `AssumeRoleWithSAML` XML response into `AwsCredentials`.
 fn parse_assume_role_response(xml: &str) -> Result<AwsCredentials> {
-    let access_key_id = find_text_by_local_name(xml, "AccessKeyId")
-        .ok_or_else(|| Error::Sts("missing AccessKeyId in STS response".into()))?;
+    let doc =
+        Document::parse(xml).map_err(|error| Error::Sts(format!("invalid STS XML: {error}")))?;
+    let credentials = doc
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name() == "AssumeRoleWithSAMLResult")
+        .and_then(|result| {
+            result
+                .children()
+                .find(|node| node.is_element() && node.tag_name().name() == "Credentials")
+        })
+        .ok_or_else(|| Error::Sts("missing Credentials in STS response".into()))?;
 
-    let secret_access_key = find_text_by_local_name(xml, "SecretAccessKey")
-        .ok_or_else(|| Error::Sts("missing SecretAccessKey in STS response".into()))?;
-
-    let session_token = find_text_by_local_name(xml, "SessionToken")
-        .ok_or_else(|| Error::Sts("missing SessionToken in STS response".into()))?;
-
-    let expiration_str = find_text_by_local_name(xml, "Expiration")
-        .ok_or_else(|| Error::Sts("missing Expiration in STS response".into()))?;
+    let access_key_id = required_child_text(credentials, "AccessKeyId")?;
+    let secret_access_key = required_child_text(credentials, "SecretAccessKey")?;
+    let session_token = required_child_text(credentials, "SessionToken")?;
+    let expiration_str = required_child_text(credentials, "Expiration")?;
 
     let expiration: DateTime<Utc> = expiration_str
         .parse()
@@ -121,6 +150,14 @@ fn parse_assume_role_response(xml: &str) -> Result<AwsCredentials> {
         session_token: Zeroizing::new(session_token),
         expiration,
     })
+}
+
+fn required_child_text(node: Node<'_, '_>, tag: &str) -> Result<String> {
+    node.children()
+        .find(|child| child.is_element() && child.tag_name().name() == tag)
+        .and_then(text_content)
+        .map(str::to_owned)
+        .ok_or_else(|| Error::Sts(format!("missing {tag} in STS response")))
 }
 
 fn find_text_by_local_name(xml: &str, tag: &str) -> Option<String> {
@@ -358,6 +395,28 @@ mod tests {
 
         let creds = parse_assume_role_response(xml).unwrap();
         assert_eq!(creds.access_key_id, "ASIAXMLNS");
+    }
+
+    #[test]
+    fn parse_assume_role_response_ignores_duplicate_tags_outside_credentials() {
+        let xml = r#"
+            <Envelope>
+                <AccessKeyId>WRONG</AccessKeyId>
+                <AssumeRoleWithSAMLResponse>
+                    <AssumeRoleWithSAMLResult>
+                        <Credentials>
+                            <AccessKeyId>ASIACORRECT</AccessKeyId>
+                            <SecretAccessKey>secret</SecretAccessKey>
+                            <SessionToken>token</SessionToken>
+                            <Expiration>2026-04-11T16:30:00Z</Expiration>
+                        </Credentials>
+                    </AssumeRoleWithSAMLResult>
+                </AssumeRoleWithSAMLResponse>
+            </Envelope>
+        "#;
+
+        let creds = parse_assume_role_response(xml).unwrap();
+        assert_eq!(creds.access_key_id, "ASIACORRECT");
     }
 
     #[test]

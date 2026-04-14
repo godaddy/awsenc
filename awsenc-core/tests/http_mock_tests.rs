@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use wiremock::matchers::{body_string_contains, header, method, path, path_regex, query_param};
-use wiremock::{Match, Mock, MockServer, Request, Respond, ResponseTemplate};
+use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 use zeroize::Zeroizing;
 
 use awsenc_core::okta::{AuthnResponse, OktaClient};
@@ -30,14 +30,6 @@ impl Respond for SequentialResponder {
         let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
         let clamped = idx.min(self.templates.len() - 1);
         self.templates[clamped].clone()
-    }
-}
-
-struct MissingCookieMatcher;
-
-impl Match for MissingCookieMatcher {
-    fn matches(&self, request: &Request) -> bool {
-        !request.headers.contains_key("cookie")
     }
 }
 
@@ -361,6 +353,200 @@ async fn okta_saml_assertion_extraction() {
 }
 
 #[tokio::test]
+async fn okta_saml_assertion_extraction_tolerates_html_attribute_variants() {
+    let server = MockServer::start().await;
+
+    let saml_html = r#"<html>
+<body>
+<form method='post' action='https://signin.aws.amazon.com/saml'>
+    <INPUT type='hidden' data-se='1' value='dmFyaWFudC1zYW1s' name='SAMLResponse'/>
+    <input type='hidden' name='RelayState' value=''/>
+</form>
+</body>
+</html>"#;
+
+    Mock::given(method("GET"))
+        .and(path("/home/amazon_aws/0oa123abc/272"))
+        .and(query_param("sessionToken", "session-for-saml"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(saml_html))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = OktaClient::with_base_url(&server.uri()).unwrap();
+    let session_token = Zeroizing::new("session-for-saml".to_string());
+    let app_url = format!("{}/home/amazon_aws/0oa123abc/272", server.uri());
+    let result = client
+        .get_saml_assertion(&session_token, &app_url)
+        .await
+        .unwrap();
+
+    assert_eq!(result, "dmFyaWFudC1zYW1s");
+}
+
+#[tokio::test]
+async fn okta_saml_assertion_extraction_ignores_comment_and_script_decoys() {
+    let server = MockServer::start().await;
+
+    let saml_html = r#"<html>
+<body>
+<!-- <input type="hidden" name="SAMLResponse" value="wrong-comment"> -->
+<script>
+const fake = '<input type="hidden" name="SAMLResponse" value="wrong-script">';
+</script>
+<form method="post" action="https://signin.aws.amazon.com/saml">
+    <input type="hidden" name="SAMLResponse" value="cmVhbC1zYW1sLWFzc2VydGlvbg=="/>
+</form>
+</body>
+</html>"#;
+
+    Mock::given(method("GET"))
+        .and(path("/home/amazon_aws/0oa123abc/272"))
+        .and(query_param("sessionToken", "session-for-saml"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(saml_html))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = OktaClient::with_base_url(&server.uri()).unwrap();
+    let session_token = Zeroizing::new("session-for-saml".to_string());
+    let app_url = format!("{}/home/amazon_aws/0oa123abc/272", server.uri());
+    let result = client
+        .get_saml_assertion(&session_token, &app_url)
+        .await
+        .unwrap();
+
+    assert_eq!(result, "cmVhbC1zYW1sLWFzc2VydGlvbg==");
+}
+
+#[tokio::test]
+async fn okta_saml_assertion_prefers_aws_post_form_over_decoy_form() {
+    let server = MockServer::start().await;
+
+    let saml_html = r#"<html>
+<body>
+<form action="https://example.test/not-aws">
+    <input type="hidden" name="SAMLResponse" value="wrong-decoy"/>
+</form>
+<form method="post" action="https://signin.aws.amazon.com/saml">
+    <input type="hidden" name="SAMLResponse" value="cmVhbC1mb3JtLXNlbGVjdGlvbg=="/>
+</form>
+</body>
+</html>"#;
+
+    Mock::given(method("GET"))
+        .and(path("/home/amazon_aws/0oa123abc/272"))
+        .and(query_param("sessionToken", "session-for-saml"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(saml_html))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = OktaClient::with_base_url(&server.uri()).unwrap();
+    let session_token = Zeroizing::new("session-for-saml".to_string());
+    let app_url = format!("{}/home/amazon_aws/0oa123abc/272", server.uri());
+    let result = client
+        .get_saml_assertion(&session_token, &app_url)
+        .await
+        .unwrap();
+
+    assert_eq!(result, "cmVhbC1mb3JtLXNlbGVjdGlvbg==");
+}
+
+#[tokio::test]
+async fn okta_saml_assertion_prefers_unique_post_form_with_relay_state() {
+    let server = MockServer::start().await;
+
+    let saml_html = r#"<html>
+<body>
+<form action="/decoy">
+    <input type="hidden" name="SAMLResponse" value="wrong-decoy"/>
+</form>
+<form method="post">
+    <input type="hidden" name="SAMLResponse" value="cmVhbC1yZWxheS1zdGF0ZS1mb3Jt"/>
+    <input type="hidden" name="RelayState" value=""/>
+</form>
+</body>
+</html>"#;
+
+    Mock::given(method("GET"))
+        .and(path("/home/amazon_aws/0oa123abc/272"))
+        .and(query_param("sessionToken", "session-for-saml"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(saml_html))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = OktaClient::with_base_url(&server.uri()).unwrap();
+    let session_token = Zeroizing::new("session-for-saml".to_string());
+    let app_url = format!("{}/home/amazon_aws/0oa123abc/272", server.uri());
+    let result = client
+        .get_saml_assertion(&session_token, &app_url)
+        .await
+        .unwrap();
+
+    assert_eq!(result, "cmVhbC1yZWxheS1zdGF0ZS1mb3Jt");
+}
+
+#[tokio::test]
+async fn okta_saml_assertion_rejects_duplicate_saml_inputs_in_selected_form() {
+    let server = MockServer::start().await;
+
+    let saml_html = r#"<html>
+<body>
+<form method="post" action="https://signin.aws.amazon.com/saml">
+    <input type="hidden" name="SAMLResponse" value="first-value"/>
+    <input type="hidden" name="SAMLResponse" value="second-value"/>
+</form>
+</body>
+</html>"#;
+
+    Mock::given(method("GET"))
+        .and(path("/home/amazon_aws/0oa123abc/272"))
+        .and(query_param("sessionToken", "session-for-saml"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(saml_html))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = OktaClient::with_base_url(&server.uri()).unwrap();
+    let session_token = Zeroizing::new("session-for-saml".to_string());
+    let app_url = format!("{}/home/amazon_aws/0oa123abc/272", server.uri());
+    let error = client
+        .get_saml_assertion(&session_token, &app_url)
+        .await
+        .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("multiple SAMLResponse inputs found in the same form"));
+}
+
+#[tokio::test]
+async fn okta_saml_assertion_rejects_oversized_response_body() {
+    let server = MockServer::start().await;
+    let oversized_html = format!("<html>{}</html>", "A".repeat(300_000));
+
+    Mock::given(method("GET"))
+        .and(path("/home/amazon_aws/0oa123abc/272"))
+        .and(query_param("sessionToken", "session-for-saml"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(oversized_html))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = OktaClient::with_base_url(&server.uri()).unwrap();
+    let session_token = Zeroizing::new("session-for-saml".to_string());
+    let app_url = format!("{}/home/amazon_aws/0oa123abc/272", server.uri());
+    let err = client
+        .get_saml_assertion(&session_token, &app_url)
+        .await
+        .unwrap_err();
+
+    assert!(err.to_string().contains("exceeds"));
+}
+
+#[tokio::test]
 async fn okta_saml_assertion_follows_multiple_redirects() {
     let server = MockServer::start().await;
 
@@ -466,45 +652,28 @@ async fn okta_session_based_saml() {
 }
 
 #[tokio::test]
-async fn okta_session_based_saml_follows_cross_origin_redirect_without_cookie() {
+async fn okta_session_based_saml_rejects_cross_origin_redirect() {
     let server = MockServer::start().await;
-    let federated_server = MockServer::start().await;
-
-    let saml_html = r#"<html>
-<body>
-<form method="post">
-    <input type="hidden" name="SAMLResponse" value="Y3Jvc3Mtb3JpZ2luLXNhbWw="/>
-</form>
-</body>
-</html>"#;
 
     Mock::given(method("GET"))
         .and(path("/home/amazon_aws/0oa_session/272"))
         .and(header("cookie", "sid=cached-session-id-xyz"))
-        .respond_with(ResponseTemplate::new(302).insert_header(
-            "location",
-            format!("{}/federated/saml", federated_server.uri()),
-        ))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("location", "https://federated.example.test/federated/saml"),
+        )
         .expect(1)
         .mount(&server)
         .await;
 
-    Mock::given(method("GET"))
-        .and(path("/federated/saml"))
-        .and(MissingCookieMatcher)
-        .respond_with(ResponseTemplate::new(200).set_body_string(saml_html))
-        .expect(1)
-        .mount(&federated_server)
-        .await;
-
     let client = OktaClient::with_base_url(&server.uri()).unwrap();
     let app_url = format!("{}/home/amazon_aws/0oa_session/272", server.uri());
-    let result = client
+    let err = client
         .get_saml_with_session("cached-session-id-xyz", &app_url)
         .await
-        .unwrap();
+        .unwrap_err();
 
-    assert_eq!(result, "Y3Jvc3Mtb3JpZ2luLXNhbWw=");
+    assert!(err.to_string().contains("validated Okta origin"));
 }
 
 #[tokio::test]
@@ -612,6 +781,32 @@ async fn sts_assume_role_with_saml_success() {
         "FwoGZXIvYXdzEBYaDH-test-session-token"
     );
     assert_eq!(creds.expiration.to_rfc3339(), "2026-04-11T20:00:00+00:00");
+}
+
+#[tokio::test]
+async fn sts_assume_role_rejects_oversized_response_body() {
+    let server = MockServer::start().await;
+    let oversized_xml = format!("<Response>{}</Response>", "X".repeat(300_000));
+
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(oversized_xml))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = StsClient::with_endpoint(&server.uri());
+    let err = client
+        .assume_role_with_saml(
+            "arn:aws:iam::123456789012:role/TestRole",
+            "arn:aws:iam::123456789012:saml-provider/Okta",
+            "c2FtbA==",
+            3600,
+        )
+        .await
+        .unwrap_err();
+
+    assert!(err.to_string().contains("exceeds"));
 }
 
 #[tokio::test]
