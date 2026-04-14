@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
-use regex::Regex;
 use reqwest::header::{ACCEPT, CONTENT_TYPE, COOKIE};
+use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{debug, warn};
@@ -26,6 +26,7 @@ pub struct OktaClient {
 
 const OKTA_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_SAML_REDIRECTS: usize = 10;
+const MAX_OKTA_RESPONSE_BYTES: usize = 256 * 1024;
 
 /// Response states from Okta's `/api/v1/authn` endpoint.
 #[derive(Debug)]
@@ -195,6 +196,11 @@ impl OktaClient {
                     .to_str()
                     .map_err(|_| Error::Saml("invalid redirect location header".into()))?;
                 url = url.join(location)?;
+                if url.origin() != okta_origin {
+                    return Err(Error::Saml(
+                        "redirected away from validated Okta origin".into(),
+                    ));
+                }
                 debug!("following SAML redirect to {url}");
                 continue;
             }
@@ -205,7 +211,8 @@ impl OktaClient {
                 )));
             }
 
-            let html = resp.text().await?;
+            let html =
+                read_response_text(resp, MAX_OKTA_RESPONSE_BYTES, "Okta SAML response").await?;
             return Ok(HtmlFetchResult {
                 final_url: url,
                 html,
@@ -240,7 +247,7 @@ impl OktaClient {
             .await?;
 
         let status = resp.status();
-        let text = resp.text().await?;
+        let text = read_response_text(resp, MAX_OKTA_RESPONSE_BYTES, "Okta authn response").await?;
 
         if !status.is_success() {
             let err_msg = parse_okta_error(&text);
@@ -278,7 +285,8 @@ impl OktaClient {
             .await?;
 
         let status = resp.status();
-        let text = resp.text().await?;
+        let text =
+            read_response_text(resp, MAX_OKTA_RESPONSE_BYTES, "Okta MFA verify response").await?;
 
         if !status.is_success() {
             let err_msg = parse_okta_error(&text);
@@ -316,7 +324,8 @@ impl OktaClient {
             .await?;
 
         let status = resp.status();
-        let text = resp.text().await?;
+        let text =
+            read_response_text(resp, MAX_OKTA_RESPONSE_BYTES, "Okta MFA verify response").await?;
 
         if !status.is_success() {
             let err_msg = parse_okta_error(&text);
@@ -415,7 +424,8 @@ impl OktaClient {
             .await?;
 
         let status = resp.status();
-        let text = resp.text().await?;
+        let text =
+            read_response_text(resp, MAX_OKTA_RESPONSE_BYTES, "Okta session response").await?;
         if !status.is_success() {
             let err_msg = parse_okta_error(&text);
             return Err(Error::Auth(format!(
@@ -466,6 +476,29 @@ fn build_okta_http_client(timeout: Duration) -> Result<reqwest::Client> {
         .redirect(reqwest::redirect::Policy::none())
         .timeout(timeout)
         .build()?)
+}
+
+async fn read_response_text(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+    context: &str,
+) -> Result<String> {
+    if let Some(content_length) = response.content_length() {
+        if content_length > max_bytes as u64 {
+            return Err(Error::Auth(format!("{context} exceeds {max_bytes} bytes")));
+        }
+    }
+
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        bytes.extend_from_slice(&chunk);
+        if bytes.len() > max_bytes {
+            return Err(Error::Auth(format!("{context} exceeds {max_bytes} bytes")));
+        }
+    }
+
+    String::from_utf8(bytes)
+        .map_err(|error| Error::Auth(format!("{context} is not valid UTF-8: {error}")))
 }
 
 pub(crate) fn validate_okta_organization(organization: &str) -> Result<String> {
@@ -589,22 +622,154 @@ fn parse_okta_error(text: &str) -> String {
 ///
 /// Okta returns an HTML form with a hidden input: `<input name="SAMLResponse" value="...">`
 fn extract_saml_assertion(html: &str) -> Result<String> {
-    let re = Regex::new(r#"name="SAMLResponse"\s+value="([^"]+)""#)?;
+    let document = Html::parse_document(html);
+    let form_selector = Selector::parse("form")
+        .map_err(|error| Error::Saml(format!("failed to build HTML selector: {error}")))?;
+    let input_selector = Selector::parse("input")
+        .map_err(|error| Error::Saml(format!("failed to build HTML selector: {error}")))?;
 
-    // Also handle value before name ordering
-    let re_alt = Regex::new(r#"value="([^"]+)"\s+name="SAMLResponse""#)?;
+    let form_candidates: Vec<FormSamlCandidate> = document
+        .select(&form_selector)
+        .map(|form| form_saml_candidate(form, &input_selector))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect();
 
-    if let Some(caps) = re.captures(html) {
-        return Ok(caps[1].to_owned());
+    if let Some(assertion) = select_saml_candidate(&form_candidates)? {
+        return Ok(assertion);
     }
 
-    if let Some(caps) = re_alt.captures(html) {
-        return Ok(caps[1].to_owned());
+    let standalone_candidates: Vec<FormSamlCandidate> = document
+        .select(&input_selector)
+        .filter_map(|input| standalone_saml_candidate(input))
+        .collect();
+    if let Some(assertion) = select_saml_candidate(&standalone_candidates)? {
+        return Ok(assertion);
     }
 
     Err(Error::Saml(
         "could not find SAMLResponse in Okta HTML response".into(),
     ))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FormSamlCandidate {
+    value: String,
+    is_aws_post_form: bool,
+    has_relay_state: bool,
+    is_post_form: bool,
+}
+
+fn form_saml_candidate(
+    form: scraper::element_ref::ElementRef<'_>,
+    input_selector: &Selector,
+) -> Result<Option<FormSamlCandidate>> {
+    let saml_values: Vec<String> = form
+        .select(input_selector)
+        .filter_map(saml_input_value)
+        .collect();
+    if saml_values.len() > 1 {
+        return Err(Error::Saml(
+            "multiple SAMLResponse inputs found in the same form".into(),
+        ));
+    }
+    let Some(value) = saml_values.into_iter().next() else {
+        return Ok(None);
+    };
+    Ok(Some(FormSamlCandidate {
+        value,
+        is_aws_post_form: form_posts_to_aws(form.value().attr("action")),
+        has_relay_state: form_has_named_input(form, input_selector, "RelayState"),
+        is_post_form: form_method_is_post(form.value().attr("method")),
+    }))
+}
+
+fn standalone_saml_candidate(
+    input: scraper::element_ref::ElementRef<'_>,
+) -> Option<FormSamlCandidate> {
+    Some(FormSamlCandidate {
+        value: saml_input_value(input)?,
+        is_aws_post_form: false,
+        has_relay_state: false,
+        is_post_form: false,
+    })
+}
+
+fn form_has_named_input(
+    form: scraper::element_ref::ElementRef<'_>,
+    input_selector: &Selector,
+    name: &str,
+) -> bool {
+    form.select(input_selector).any(|input| {
+        input
+            .value()
+            .attr("name")
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(name))
+    })
+}
+
+fn form_method_is_post(method: Option<&str>) -> bool {
+    method.is_some_and(|method| method.eq_ignore_ascii_case("post"))
+}
+
+fn saml_input_value(input: scraper::element_ref::ElementRef<'_>) -> Option<String> {
+    let attrs = input.value();
+    attrs
+        .attr("name")
+        .filter(|name| name.eq_ignore_ascii_case("SAMLResponse"))
+        .and_then(|_| attrs.attr("value"))
+        .map(str::to_owned)
+}
+
+fn select_saml_candidate(candidates: &[FormSamlCandidate]) -> Result<Option<String>> {
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+
+    let aws_candidates: Vec<&FormSamlCandidate> = candidates
+        .iter()
+        .filter(|candidate| candidate.is_aws_post_form)
+        .collect();
+    if aws_candidates.len() == 1 {
+        return Ok(Some(aws_candidates[0].value.clone()));
+    }
+    if aws_candidates.len() > 1 {
+        return Err(Error::Saml(
+            "multiple AWS SAMLResponse forms found in Okta HTML response".into(),
+        ));
+    }
+
+    let relay_state_candidates: Vec<&FormSamlCandidate> = candidates
+        .iter()
+        .filter(|candidate| candidate.has_relay_state && candidate.is_post_form)
+        .collect();
+    if relay_state_candidates.len() == 1 {
+        return Ok(Some(relay_state_candidates[0].value.clone()));
+    }
+    if relay_state_candidates.len() > 1 {
+        return Err(Error::Saml(
+            "multiple SAMLResponse POST forms with RelayState found in Okta HTML response".into(),
+        ));
+    }
+
+    if candidates.len() == 1 {
+        return Ok(Some(candidates[0].value.clone()));
+    }
+
+    Err(Error::Saml(
+        "multiple SAMLResponse candidates found in Okta HTML response".into(),
+    ))
+}
+
+fn form_posts_to_aws(action: Option<&str>) -> bool {
+    let Some(action) = action else {
+        return false;
+    };
+    let Ok(url) = Url::parse(action) else {
+        return false;
+    };
+    matches!(url.host_str(), Some("signin.aws.amazon.com")) && url.path() == "/saml"
 }
 
 #[cfg(test)]
@@ -720,6 +885,91 @@ mod tests {
         let html = r#"<input type="hidden" value="base64data" name="SAMLResponse"/>"#;
         let assertion = extract_saml_assertion(html).unwrap();
         assert_eq!(assertion, "base64data");
+    }
+
+    #[test]
+    fn extract_saml_with_single_quotes_and_extra_attributes() {
+        let html = r#"<input data-se="1" name='SAMLResponse' data-extra="x" value='base64data' />"#;
+        let assertion = extract_saml_assertion(html).unwrap();
+        assert_eq!(assertion, "base64data");
+    }
+
+    #[test]
+    fn extract_saml_with_unquoted_value() {
+        let html = r#"<input value=base64data type="hidden" name="SAMLResponse">"#;
+        let assertion = extract_saml_assertion(html).unwrap();
+        assert_eq!(assertion, "base64data");
+    }
+
+    #[test]
+    fn extract_saml_ignores_comment_decoys() {
+        let html = r#"<!-- <input name="SAMLResponse" value="wrong"> -->
+        <form><input type="hidden" name="SAMLResponse" value="correct"></form>"#;
+        let assertion = extract_saml_assertion(html).unwrap();
+        assert_eq!(assertion, "correct");
+    }
+
+    #[test]
+    fn extract_saml_ignores_script_decoys() {
+        let html = r#"<script>var fake = '<input name="SAMLResponse" value="wrong">';</script>
+        <form><input type="hidden" name="SAMLResponse" value="correct"></form>"#;
+        let assertion = extract_saml_assertion(html).unwrap();
+        assert_eq!(assertion, "correct");
+    }
+
+    #[test]
+    fn extract_saml_prefers_aws_post_form_over_other_candidates() {
+        let html = r#"<html><body>
+        <form action="https://example.test/not-aws">
+            <input type="hidden" name="SAMLResponse" value="wrong">
+        </form>
+        <form method="post" action="https://signin.aws.amazon.com/saml">
+            <input type="hidden" name="SAMLResponse" value="correct">
+        </form>
+        </body></html>"#;
+        let assertion = extract_saml_assertion(html).unwrap();
+        assert_eq!(assertion, "correct");
+    }
+
+    #[test]
+    fn extract_saml_prefers_unique_post_form_with_relay_state() {
+        let html = r#"<html><body>
+        <form action="/decoy">
+            <input type="hidden" name="SAMLResponse" value="wrong">
+        </form>
+        <form method="post">
+            <input type="hidden" name="SAMLResponse" value="correct">
+            <input type="hidden" name="RelayState" value="">
+        </form>
+        </body></html>"#;
+        let assertion = extract_saml_assertion(html).unwrap();
+        assert_eq!(assertion, "correct");
+    }
+
+    #[test]
+    fn extract_saml_rejects_ambiguous_multiple_forms_without_aws_action() {
+        let html = r#"<html><body>
+        <form><input type="hidden" name="SAMLResponse" value="first"></form>
+        <form><input type="hidden" name="SAMLResponse" value="second"></form>
+        </body></html>"#;
+        let error = extract_saml_assertion(html).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("multiple SAMLResponse candidates"));
+    }
+
+    #[test]
+    fn extract_saml_rejects_multiple_saml_inputs_in_same_form() {
+        let html = r#"<html><body>
+        <form method="post" action="https://signin.aws.amazon.com/saml">
+            <input type="hidden" name="SAMLResponse" value="first">
+            <input type="hidden" name="SAMLResponse" value="second">
+        </form>
+        </body></html>"#;
+        let error = extract_saml_assertion(html).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("multiple SAMLResponse inputs found in the same form"));
     }
 
     #[test]
