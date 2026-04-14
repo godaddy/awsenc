@@ -75,7 +75,7 @@ async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             if args.print_profile {
                 println!("{profile}");
             } else {
-                eprintln!("Switched to profile: {profile}");
+                eprintln!("\nSwitched to profile: {profile}");
                 eprintln!("Note: use 'awsenc-use' shell function to set env vars in your shell");
             }
 
