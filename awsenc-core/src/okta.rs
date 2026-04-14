@@ -25,6 +25,7 @@ pub struct OktaClient {
 }
 
 const OKTA_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_SAML_REDIRECTS: usize = 10;
 
 /// Response states from Okta's `/api/v1/authn` endpoint.
 #[derive(Debug)]
@@ -119,11 +120,19 @@ struct CreateSessionResponse {
     expires_at: DateTime<Utc>,
 }
 
+#[derive(Debug)]
+struct HtmlFetchResult {
+    final_url: Url,
+    html: String,
+    redirects_followed: usize,
+}
+
 impl OktaClient {
     /// Create a new Okta API client for the given organization domain.
     ///
     /// `organization` should be the full Okta domain, e.g. `mycompany.okta.com`.
     pub fn new(organization: &str) -> Result<Self> {
+        let organization = validate_okta_organization(organization)?;
         let base_url = format!("https://{organization}");
         Self::with_base_url_and_timeout(&base_url, OKTA_HTTP_TIMEOUT)
     }
@@ -145,15 +154,66 @@ impl OktaClient {
         validate_okta_app_url_against_base_url(&self.base_url, app_url)
     }
 
-    fn saml_url_with_session_token(
-        &self,
-        app_url: &str,
-        session_token: &str,
-    ) -> Result<Url> {
+    fn saml_url_with_session_token(&self, app_url: &str, session_token: &str) -> Result<Url> {
         let mut url = self.validated_app_url(app_url)?;
         url.query_pairs_mut()
             .append_pair("sessionToken", session_token);
         Ok(url)
+    }
+
+    fn base_origin(&self) -> Result<url::Origin> {
+        Ok(Url::parse(&self.base_url)?.origin())
+    }
+
+    async fn fetch_html_following_redirects(
+        &self,
+        mut url: Url,
+        session_id: Option<&str>,
+    ) -> Result<HtmlFetchResult> {
+        let okta_origin = self.base_origin()?;
+
+        for redirects_followed in 0..=MAX_SAML_REDIRECTS {
+            let mut request = self.client.get(url.clone()).header(ACCEPT, "text/html");
+            if let Some(session_id) = session_id.filter(|_| url.origin() == okta_origin) {
+                request = request.header(COOKIE, format!("sid={session_id}"));
+            }
+
+            let resp = request.send().await?;
+            let status = resp.status();
+
+            if status.is_redirection() {
+                if redirects_followed == MAX_SAML_REDIRECTS {
+                    return Err(Error::Saml(
+                        "too many redirects while fetching SAML assertion".into(),
+                    ));
+                }
+
+                let location = resp
+                    .headers()
+                    .get("location")
+                    .ok_or_else(|| Error::Saml("missing redirect location header".into()))?
+                    .to_str()
+                    .map_err(|_| Error::Saml("invalid redirect location header".into()))?;
+                url = url.join(location)?;
+                debug!("following SAML redirect to {url}");
+                continue;
+            }
+
+            if !status.is_success() {
+                return Err(Error::Saml(format!(
+                    "failed to get SAML assertion (HTTP {status})"
+                )));
+            }
+
+            let html = resp.text().await?;
+            return Ok(HtmlFetchResult {
+                final_url: url,
+                html,
+                redirects_followed,
+            });
+        }
+
+        unreachable!("redirect loop exits within MAX_SAML_REDIRECTS bounds");
     }
 
     /// Authenticate a user with username and password.
@@ -334,38 +394,8 @@ impl OktaClient {
         app_url: &str,
     ) -> Result<String> {
         let url = self.saml_url_with_session_token(app_url, session_token.as_str())?;
-
-        let resp = self
-            .client
-            .get(url.as_str())
-            .header(ACCEPT, "text/html")
-            .send()
-            .await?;
-
-        // Follow the redirect chain manually if needed
-        let status = resp.status();
-        if status.is_redirection() {
-            // Okta might redirect; follow it
-            if let Some(location) = resp.headers().get("location") {
-                let redirect_url = location
-                    .to_str()
-                    .map_err(|_| Error::Saml("invalid redirect location header".into()))?;
-                let redirect_url = url.join(redirect_url)?;
-                debug!("following SAML redirect to {redirect_url}");
-                let resp2 = self.client.get(redirect_url).send().await?;
-                let html = resp2.text().await?;
-                return extract_saml_assertion(&html);
-            }
-        }
-
-        if !status.is_success() {
-            return Err(Error::Saml(format!(
-                "failed to get SAML assertion (HTTP {status})"
-            )));
-        }
-
-        let html = resp.text().await?;
-        extract_saml_assertion(&html)
+        let response = self.fetch_html_following_redirects(url, None).await?;
+        extract_saml_assertion(&response.html)
     }
 
     /// Exchange a one-time session token for a reusable Okta session cookie id.
@@ -407,31 +437,23 @@ impl OktaClient {
     /// Used when the Okta session is cached (avoids re-authentication).
     pub async fn get_saml_with_session(&self, session_id: &str, app_url: &str) -> Result<String> {
         let app_url = self.validated_app_url(app_url)?;
-        let resp = self
-            .client
-            .get(app_url)
-            .header(ACCEPT, "text/html")
-            .header(COOKIE, format!("sid={session_id}"))
-            .send()
+        let response = self
+            .fetch_html_following_redirects(app_url, Some(session_id))
             .await?;
 
-        let status = resp.status();
-        if status.is_redirection() {
-            // Session may be expired; Okta redirects to login
-            warn!("Okta session redirect (likely expired)");
-            return Err(Error::Auth(
-                "Okta session expired (received redirect)".into(),
-            ));
+        match extract_saml_assertion(&response.html) {
+            Ok(assertion) => Ok(assertion),
+            Err(_extract_error) if response.redirects_followed > 0 => {
+                warn!(
+                    "Okta session redirect ended without a SAML assertion at {}",
+                    response.final_url
+                );
+                Err(Error::Auth(
+                    "Okta session expired or redirected to a non-SAML page".into(),
+                ))
+            }
+            Err(error) => Err(error),
         }
-
-        if !status.is_success() {
-            return Err(Error::Saml(format!(
-                "failed to get SAML assertion with session (HTTP {status})"
-            )));
-        }
-
-        let html = resp.text().await?;
-        extract_saml_assertion(&html)
     }
 }
 
@@ -446,7 +468,40 @@ fn build_okta_http_client(timeout: Duration) -> Result<reqwest::Client> {
         .build()?)
 }
 
+pub(crate) fn validate_okta_organization(organization: &str) -> Result<String> {
+    let organization = organization.trim();
+    if organization.is_empty() {
+        return Err(Error::Config("okta organization cannot be empty".into()));
+    }
+    if organization.contains("://")
+        || organization.contains('/')
+        || organization.contains('?')
+        || organization.contains('#')
+        || organization.contains('@')
+    {
+        return Err(Error::Config(format!(
+            "okta organization must be a bare host or host:port: {organization}"
+        )));
+    }
+
+    let parsed = Url::parse(&format!("https://{organization}"))?;
+    if parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.path() != "/"
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(Error::Config(format!(
+            "okta organization must be a bare host or host:port: {organization}"
+        )));
+    }
+
+    Ok(organization.to_owned())
+}
+
 pub(crate) fn validate_okta_application_url(organization: &str, app_url: &str) -> Result<String> {
+    let organization = validate_okta_organization(organization)?;
     let base_url = format!("https://{organization}");
     Ok(validate_okta_app_url_against_base_url(&base_url, app_url)?.to_string())
 }
@@ -680,6 +735,24 @@ mod tests {
     }
 
     #[test]
+    fn validate_okta_organization_accepts_host() {
+        let organization = validate_okta_organization("mycompany.okta.com").unwrap();
+        assert_eq!(organization, "mycompany.okta.com");
+    }
+
+    #[test]
+    fn validate_okta_organization_rejects_path() {
+        let error = validate_okta_organization("mycompany.okta.com/home/app").unwrap_err();
+        assert!(error.to_string().contains("bare host"));
+    }
+
+    #[test]
+    fn validate_okta_organization_rejects_userinfo() {
+        let error = validate_okta_organization("user@mycompany.okta.com").unwrap_err();
+        assert!(error.to_string().contains("bare host"));
+    }
+
+    #[test]
     fn validate_okta_application_url_accepts_same_origin_https() {
         let url = validate_okta_application_url(
             "mycompany.okta.com",
@@ -698,7 +771,9 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(error.to_string().contains("must match Okta organization origin"));
+        assert!(error
+            .to_string()
+            .contains("must match Okta organization origin"));
     }
 
     #[test]
@@ -722,7 +797,10 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(url.query(), Some("fromHome=true&sessionToken=session-token-123"));
+        assert_eq!(
+            url.query(),
+            Some("fromHome=true&sessionToken=session-token-123")
+        );
     }
 
     #[tokio::test]

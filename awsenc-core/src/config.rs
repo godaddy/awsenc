@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use enclaveapp_core::metadata;
 use serde::{Deserialize, Serialize};
 
-use crate::okta::validate_okta_application_url;
+use crate::okta::{validate_okta_application_url, validate_okta_organization};
 use crate::{Error, Result};
 
 // ---------------------------------------------------------------------------
@@ -253,6 +253,7 @@ pub fn resolve_config(
         .or_else(|| profile.okta.organization.clone())
         .or_else(|| global.okta.organization.clone())
         .ok_or_else(|| Error::MissingConfig("okta organization".into()))?;
+    let okta_organization = validate_okta_organization(&okta_organization)?;
 
     let okta_user = overrides
         .user
@@ -377,9 +378,7 @@ mod tests {
         let profile = ProfileConfig {
             okta: ProfileOktaConfig {
                 organization: None,
-                application: Some(
-                    "https://global-org.okta.com/home/amazon_aws/0oa123/272".into(),
-                ),
+                application: Some("https://global-org.okta.com/home/amazon_aws/0oa123/272".into()),
                 role: Some("arn:aws:iam::123456789012:role/MyRole".into()),
                 factor: Some("yubikey".into()),
                 duration: Some(7200),
@@ -467,9 +466,11 @@ mod tests {
             ..Default::default()
         };
 
-        let error = resolve_config("test", &global, &profile, &ConfigOverrides::default())
-            .unwrap_err();
-        assert!(error.to_string().contains("must match Okta organization origin"));
+        let error =
+            resolve_config("test", &global, &profile, &ConfigOverrides::default()).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("must match Okta organization origin"));
     }
 
     #[test]
@@ -493,9 +494,35 @@ mod tests {
             ..Default::default()
         };
 
-        let error = resolve_config("test", &global, &profile, &ConfigOverrides::default())
-            .unwrap_err();
+        let error =
+            resolve_config("test", &global, &profile, &ConfigOverrides::default()).unwrap_err();
         assert!(error.to_string().contains("must use HTTPS"));
+    }
+
+    #[test]
+    fn resolve_config_rejects_non_host_okta_organization() {
+        let global = GlobalConfig {
+            okta: OktaConfig {
+                organization: Some("global-org.okta.com/path".into()),
+                user: Some("globaluser".into()),
+                default_factor: None,
+            },
+            ..Default::default()
+        };
+        let profile = ProfileConfig {
+            okta: ProfileOktaConfig {
+                organization: None,
+                application: Some("https://global-org.okta.com/home/app".into()),
+                role: Some("arn:aws:iam::123:role/R".into()),
+                factor: None,
+                duration: None,
+            },
+            ..Default::default()
+        };
+
+        let error =
+            resolve_config("test", &global, &profile, &ConfigOverrides::default()).unwrap_err();
+        assert!(error.to_string().contains("bare host"));
     }
 
     #[test]
