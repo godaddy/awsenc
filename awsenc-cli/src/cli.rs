@@ -176,6 +176,10 @@ pub struct InstallArgs {
     /// Require biometric for decryption
     #[arg(long)]
     pub biometric: bool,
+
+    /// Run an interactive setup wizard for missing values
+    #[arg(long)]
+    pub wizard: bool,
 }
 
 impl InstallArgs {
@@ -383,6 +387,7 @@ mod tests {
                 assert_eq!(args.user.as_deref(), Some("u"));
                 assert_eq!(args.region.as_deref(), Some("us-west-2"));
                 assert!(args.biometric);
+                assert!(!args.wizard);
             }
             _ => panic!("expected Install command"),
         }
@@ -506,6 +511,7 @@ mod tests {
             duration: None,
             region: None,
             biometric: false,
+            wizard: false,
         };
         assert_eq!(args.resolved_profile(), Some("flagged"));
     }

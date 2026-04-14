@@ -56,26 +56,19 @@
             <ComponentGroupRef Id="ProductComponents" />
         </Feature>
 
-        <!-- Custom actions: run awsenc install after install, awsenc uninstall before uninstall -->
         <CustomAction
-            Id="AwsencInstall"
+            Id="AwsencSetupWizard"
             FileRef="awsenc.exe"
-            ExeCommand="install"
-            Execute="deferred"
+            ExeCommand="install --wizard"
+            Execute="immediate"
             Impersonate="yes"
-            Return="ignore" />
-
-        <CustomAction
-            Id="AwsencUninstall"
-            FileRef="awsenc.exe"
-            ExeCommand="uninstall"
-            Execute="deferred"
-            Impersonate="yes"
-            Return="ignore" />
+            Return="asyncNoWait" />
 
         <InstallExecuteSequence>
-            <Custom Action="AwsencInstall" After="InstallFiles" Condition="NOT REMOVE" />
-            <Custom Action="AwsencUninstall" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
+            <Custom
+                Action="AwsencSetupWizard"
+                After="InstallFinalize"
+                Condition="NOT Installed AND NOT REMOVE AND UILevel &gt;= 5" />
         </InstallExecuteSequence>
 
     </Package>

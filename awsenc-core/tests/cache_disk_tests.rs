@@ -290,14 +290,19 @@ fn config_profile_save_load_roundtrip() {
     let config = ProfileConfig {
         okta: ProfileOktaConfig {
             organization: Some("custom-org.okta.com".into()),
+            user: Some("jane@company.com".into()),
             application: Some("https://custom-org.okta.com/home/amazon_aws/0oa123/272".into()),
             role: Some("arn:aws:iam::123456789012:role/Admin".into()),
             factor: Some("yubikey".into()),
             duration: Some(7200),
         },
+        security: awsenc_core::config::ProfileSecurityConfig {
+            biometric: Some(true),
+        },
         secondary_role: Some(SecondaryRoleConfig {
             role_arn: "arn:aws:iam::987654321098:role/CrossAccount".into(),
         }),
+        region: Some("us-west-2".into()),
     };
 
     let toml_str = toml::to_string_pretty(&config).unwrap();
@@ -320,6 +325,8 @@ fn config_profile_save_load_roundtrip() {
     );
     assert_eq!(loaded.okta.factor.as_deref(), Some("yubikey"));
     assert_eq!(loaded.okta.duration, Some(7200));
+    assert_eq!(loaded.okta.user.as_deref(), Some("jane@company.com"));
+    assert_eq!(loaded.security.biometric, Some(true));
     assert_eq!(
         loaded
             .secondary_role
@@ -327,6 +334,7 @@ fn config_profile_save_load_roundtrip() {
             .map(|sr| sr.role_arn.as_str()),
         Some("arn:aws:iam::987654321098:role/CrossAccount")
     );
+    assert_eq!(loaded.region.as_deref(), Some("us-west-2"));
 }
 
 #[test]
@@ -337,12 +345,15 @@ fn config_profile_minimal_roundtrip() {
     let config = ProfileConfig {
         okta: ProfileOktaConfig {
             organization: None,
+            user: None,
             application: Some("https://org.okta.com/app".into()),
             role: Some("arn:aws:iam::123:role/R".into()),
             factor: None,
             duration: None,
         },
+        security: awsenc_core::config::ProfileSecurityConfig::default(),
         secondary_role: None,
+        region: None,
     };
 
     let toml_str = toml::to_string_pretty(&config).unwrap();

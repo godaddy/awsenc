@@ -14,10 +14,10 @@ uninstall:
 	rm -f $(BINDIR)/awsenc
 
 test:
-	cargo test --workspace --features awsenc-secure-storage/mock
+	cargo test --workspace
 
 lint:
-	cargo clippy --workspace --features awsenc-secure-storage/mock -- -D warnings
+	cargo clippy --workspace --all-targets -- -D warnings
 
 fmt:
 	cargo fmt --all

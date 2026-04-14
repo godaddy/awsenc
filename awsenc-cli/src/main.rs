@@ -22,6 +22,11 @@ mod usage;
 
 use cli::{Cli, Commands};
 
+#[cfg(test)]
+pub(crate) mod test_support {
+    pub(crate) static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+}
+
 #[tokio::main]
 #[allow(clippy::print_stderr)]
 async fn main() {
@@ -68,7 +73,7 @@ async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
 
         Commands::Use(args) => {
-            let profile = resolve_interactive_profile(args.profile.as_deref())?;
+            let profile = resolve_use_profile(args.profile.as_deref())?;
             let global = config::load_global_config().unwrap_or_default();
             let profile = config::resolve_alias(&profile, &global);
 
@@ -123,6 +128,26 @@ fn resolve_interactive_profile(
     Err("no profile specified and stdin is not a TTY for interactive selection".into())
 }
 
+fn resolve_use_profile(explicit: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
+    if let Some(value) = explicit {
+        if let Ok(rank) = value.parse::<usize>() {
+            let profiles = profile::list_profiles()?;
+            let usage_data = usage::load_usage();
+            let mru = usage::get_mru_profiles(&usage_data, profiles.len());
+            if rank == 0 || rank > mru.len() {
+                return Err(format!(
+                    "MRU rank {rank} is out of range; {} profile(s) in history",
+                    mru.len()
+                )
+                .into());
+            }
+            return Ok(mru[rank - 1].clone());
+        }
+    }
+
+    resolve_interactive_profile(explicit)
+}
+
 fn create_storage(
     biometric: bool,
 ) -> Result<Box<dyn EncryptionStorage>, Box<dyn std::error::Error>> {
@@ -149,8 +174,11 @@ fn resolve_biometric_for_profile(profile: &str, cli_biometric: bool) -> bool {
     let Ok(profile_config) = config::load_profile_config(profile) else {
         return global.security.biometric.unwrap_or(false);
     };
-    let overrides = ConfigOverrides::from_env();
-    config::resolve_config(profile, &global, &profile_config, &overrides).is_ok_and(|c| c.biometric)
+    ConfigOverrides::from_env()
+        .biometric
+        .or(profile_config.security.biometric)
+        .or(global.security.biometric)
+        .unwrap_or(false)
 }
 
 fn resolve_biometric_from_serve(args: &cli::ServeArgs) -> bool {
@@ -429,22 +457,35 @@ mod tests {
 
     #[test]
     fn resolve_biometric_for_nonexistent_profile() {
+        let _lock = test_support::ENV_MUTEX.lock().expect("mutex poisoned");
         let tmp = tempfile::tempdir().unwrap();
+        let prev = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
         let result = resolve_biometric_for_profile("nonexistent-profile-xyz", false);
         assert!(!result);
+        match prev {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
     }
 
     #[test]
     fn resolve_biometric_for_profile_cli_override() {
+        let _lock = test_support::ENV_MUTEX.lock().expect("mutex poisoned");
         let tmp = tempfile::tempdir().unwrap();
+        let prev = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
         let result = resolve_biometric_for_profile("nonexistent-profile-xyz", true);
         assert!(result);
+        match prev {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
     }
 
     #[test]
     fn resolve_biometric_from_serve_empty_profile() {
+        let _lock = test_support::ENV_MUTEX.lock().expect("mutex poisoned");
         let prev = std::env::var("AWSENC_PROFILE").ok();
         std::env::remove_var("AWSENC_PROFILE");
 
@@ -462,6 +503,7 @@ mod tests {
 
     #[test]
     fn resolve_biometric_from_exec_empty_profile() {
+        let _lock = test_support::ENV_MUTEX.lock().expect("mutex poisoned");
         let prev = std::env::var("AWSENC_PROFILE").ok();
         std::env::remove_var("AWSENC_PROFILE");
 
@@ -480,7 +522,9 @@ mod tests {
 
     #[test]
     fn resolve_biometric_from_exec_with_profile() {
+        let _lock = test_support::ENV_MUTEX.lock().expect("mutex poisoned");
         let tmp = tempfile::tempdir().unwrap();
+        let prev = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
 
         let args = cli::ExecArgs {
@@ -490,5 +534,9 @@ mod tests {
         };
         let result = resolve_biometric_from_exec(&args);
         assert!(!result);
+        match prev {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
     }
 }

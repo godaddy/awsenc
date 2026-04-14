@@ -10,7 +10,7 @@ resist, or explicitly not resist.
 | AWS session credentials | AccessKeyId, SecretAccessKey, SessionToken | High -- grants AWS API access |
 | Secure Enclave / TPM private key | Hardware-bound P-256 key used for ECIES encryption | Critical -- compromise enables offline cache decryption |
 | Encrypted cache file | ECIES-encrypted credentials at `~/.config/awsenc/<profile>.enc` | Medium -- useless without the hardware key |
-| Okta session token | Cached Okta session used to obtain new SAML assertions | High -- session hijacking enables credential theft |
+| Okta session token | Transient `/authn` session token used only during the active login flow | High -- session hijacking enables credential theft |
 | SAML assertion | Signed XML from Okta authorizing AWS role assumption | High -- short-lived but grants STS access |
 | Okta password | User's Okta credentials entered during authentication | Critical -- entered interactively, never stored |
 | Configuration files | TOML files with Okta org, application URL, role ARN | Low -- no secrets, controls behavior |
@@ -95,7 +95,7 @@ authentication.
 **Mitigation:**
 - All Okta communication uses HTTPS with rustls (TLS 1.2/1.3).
 - Passwords are read from the terminal with echo disabled.
-- Passwords are held in `Zeroizing` buffers and wiped after use.
+- Password prompts use `Zeroizing<String>` at input boundaries and avoid writing secrets to disk or logs.
 - MFA factors (YubiKey OTP, push, TOTP) provide second-factor protection.
 
 **Residual risk:** A compromised CA could issue fraudulent certificates.
@@ -135,7 +135,7 @@ against offline attacks, not a fully compromised running system.
 awsenc's process memory.
 
 **Mitigation:**
-- Credential buffers use `Zeroizing<Vec<u8>>` which overwrites on drop.
+- AWS credential buffers use `Zeroizing` wrappers where practical, and the decrypt-to-output window is kept short.
 - The window of exposure is minimized: credentials exist in plaintext only
   during the decrypt-to-output path.
 
@@ -185,19 +185,17 @@ encryption key. This is a known limitation.
 
 ### T11: Okta session reuse
 
-**Threat:** A cached Okta session token is used by an attacker to obtain
-new SAML assertions without MFA.
+**Threat:** A cached Okta browser session or replayable session token is used
+by an attacker to obtain new SAML assertions without MFA.
 
 **Mitigation:**
-- Okta session tokens are encrypted with the same hardware-bound key as
-  AWS credentials.
-- Sessions have a limited lifetime (typically 2 hours).
-- Destroying the cache (`awsenc clear`) immediately invalidates the
-  local session.
+- The current implementation does not cache Okta sessions for transparent
+  reuse.
+- Expired AWS credentials require an explicit `awsenc auth` flow.
 
-**Residual risk:** Within the session window, anyone who can decrypt the
-cache can obtain new SAML assertions. The `--biometric` option mitigates
-this by requiring physical presence for decryption.
+**Residual risk:** Active interactive authentication still handles Okta
+session material in process memory, but there is no repo-owned local session
+replay surface in the cache format.
 
 ## Out of Scope
 

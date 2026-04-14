@@ -1,14 +1,15 @@
 use chrono::{DateTime, Utc};
 use regex::Regex;
-use reqwest::header::{ACCEPT, CONTENT_TYPE, COOKIE};
+use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
+use url::Url;
 use zeroize::Zeroizing;
 
 use crate::mfa::MfaChallenge;
 use crate::{Error, Result};
 
-/// An authenticated Okta session that can be cached.
+/// An Okta session payload retained only for cache-format compatibility.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OktaSession {
     pub session_id: String,
@@ -302,11 +303,52 @@ impl OktaClient {
         session_token: &Zeroizing<String>,
         app_url: &str,
     ) -> Result<String> {
-        let url = format!("{app_url}?sessionToken={}", session_token.as_str());
+        let mut url = Url::parse(app_url)?;
+        url.query_pairs_mut()
+            .append_pair("sessionToken", session_token.as_str());
+        self.fetch_saml_assertion(url, None).await
+    }
 
+    /// Get a SAML assertion for a validated Okta application URL on the trusted Okta host.
+    pub async fn get_saml_assertion_for_org(
+        &self,
+        session_token: &Zeroizing<String>,
+        app_url: &str,
+        trusted_host: &str,
+    ) -> Result<String> {
+        let mut url = Url::parse(app_url)?;
+        if url.scheme() != "https" {
+            return Err(Error::Saml(format!(
+                "Okta application URL must use https: {app_url}"
+            )));
+        }
+        let Some(host) = url.host_str() else {
+            return Err(Error::Saml(format!(
+                "Okta application URL must include a host: {app_url}"
+            )));
+        };
+        if host != trusted_host {
+            return Err(Error::Saml(format!(
+                "Okta application host must match trusted Okta organization ({trusted_host}): {app_url}"
+            )));
+        }
+        if url
+            .query_pairs()
+            .any(|(key, _)| key.eq_ignore_ascii_case("sessionToken"))
+        {
+            return Err(Error::Saml(format!(
+                "Okta application URL must not include a sessionToken query parameter: {app_url}"
+            )));
+        }
+        url.query_pairs_mut()
+            .append_pair("sessionToken", session_token.as_str());
+        self.fetch_saml_assertion(url, Some(trusted_host)).await
+    }
+
+    async fn fetch_saml_assertion(&self, url: Url, trusted_host: Option<&str>) -> Result<String> {
         let resp = self
             .client
-            .get(&url)
+            .get(url.clone())
             .header(ACCEPT, "text/html")
             .send()
             .await?;
@@ -314,11 +356,14 @@ impl OktaClient {
         // Follow the redirect chain manually if needed
         let status = resp.status();
         if status.is_redirection() {
-            // Okta might redirect; follow it
             if let Some(location) = resp.headers().get("location") {
-                let redirect_url = location
+                let redirect_location = location
                     .to_str()
                     .map_err(|_| Error::Saml("invalid redirect location header".into()))?;
+                let redirect_url = url.join(redirect_location)?;
+                if let Some(host) = trusted_host {
+                    ensure_trusted_redirect(&redirect_url, host)?;
+                }
                 debug!("following SAML redirect to {redirect_url}");
                 let resp2 = self.client.get(redirect_url).send().await?;
                 let html = resp2.text().await?;
@@ -338,33 +383,14 @@ impl OktaClient {
 
     /// Get a SAML assertion using an existing Okta session cookie.
     ///
-    /// Used when the Okta session is cached (avoids re-authentication).
+    /// This path is intentionally disabled until a supported Okta session model
+    /// is implemented.
     pub async fn get_saml_with_session(&self, session_id: &str, app_url: &str) -> Result<String> {
-        let resp = self
-            .client
-            .get(app_url)
-            .header(ACCEPT, "text/html")
-            .header(COOKIE, format!("sid={session_id}"))
-            .send()
-            .await?;
-
-        let status = resp.status();
-        if status.is_redirection() {
-            // Session may be expired; Okta redirects to login
-            warn!("Okta session redirect (likely expired)");
-            return Err(Error::Auth(
-                "Okta session expired (received redirect)".into(),
-            ));
-        }
-
-        if !status.is_success() {
-            return Err(Error::Saml(format!(
-                "failed to get SAML assertion with session (HTTP {status})"
-            )));
-        }
-
-        let html = resp.text().await?;
-        extract_saml_assertion(&html)
+        let _ = (session_id, app_url);
+        warn!("transparent Okta session reuse is disabled");
+        Err(Error::Auth(
+            "transparent Okta session reuse is disabled; run 'awsenc auth'".into(),
+        ))
     }
 }
 
@@ -422,6 +448,18 @@ fn parse_authn_response(text: &str) -> Result<AuthnResponse> {
         }
         other => Err(Error::Auth(format!("unexpected Okta status: {other}"))),
     }
+}
+
+fn ensure_trusted_redirect(url: &Url, trusted_host: &str) -> Result<()> {
+    let Some(host) = url.host_str() else {
+        return Err(Error::Saml(format!("redirect target missing host: {url}")));
+    };
+    if host == trusted_host || host == "signin.aws.amazon.com" {
+        return Ok(());
+    }
+    Err(Error::Saml(format!(
+        "refusing redirect to untrusted host: {host}"
+    )))
 }
 
 fn parse_okta_error(text: &str) -> String {
@@ -512,6 +550,30 @@ mod tests {
             }
             _ => panic!("expected MfaRequired"),
         }
+    }
+
+    #[test]
+    fn trusted_redirect_allows_okta_and_aws_hosts() {
+        assert!(ensure_trusted_redirect(
+            &Url::parse("https://example.okta.com/app").unwrap(),
+            "example.okta.com",
+        )
+        .is_ok());
+        assert!(ensure_trusted_redirect(
+            &Url::parse("https://signin.aws.amazon.com/saml").unwrap(),
+            "example.okta.com",
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn trusted_redirect_rejects_untrusted_host() {
+        let err = ensure_trusted_redirect(
+            &Url::parse("https://evil.example/saml").unwrap(),
+            "example.okta.com",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("refusing redirect"));
     }
 
     #[test]

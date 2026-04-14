@@ -87,16 +87,15 @@ pub fn list_profiles() -> Result<Vec<ProfileInfo>> {
 
 /// Check if a profile config file exists.
 pub fn profile_exists(name: &str) -> bool {
-    config::profiles_dir()
-        .map(|dir| dir.join(format!("{name}.toml")).exists())
+    config::profile_config_path(name)
+        .map(|path| path.exists())
         .unwrap_or(false)
 }
 
 /// Delete a profile's config and cache files.
 pub fn delete_profile(name: &str) -> Result<()> {
     // Delete profile config
-    let profiles_dir = config::profiles_dir()?;
-    let config_path = profiles_dir.join(format!("{name}.toml"));
+    let config_path = config::profile_config_path(name)?;
     if config_path.exists() {
         std::fs::remove_file(&config_path)?;
     } else {
@@ -153,12 +152,15 @@ mod tests {
         let config = ProfileConfig {
             okta: ProfileOktaConfig {
                 organization: None,
+                user: None,
                 application: Some("https://org.okta.com/app".into()),
                 role: Some("arn:aws:iam::123:role/R".into()),
                 factor: None,
                 duration: None,
             },
+            security: config::ProfileSecurityConfig::default(),
             secondary_role: None,
+            region: None,
         };
 
         // Save

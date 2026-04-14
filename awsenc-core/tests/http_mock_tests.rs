@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use wiremock::matchers::{body_string_contains, header, method, path, path_regex};
+use wiremock::matchers::{body_string_contains, method, path, path_regex};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 use zeroize::Zeroizing;
 
@@ -382,60 +382,37 @@ async fn okta_saml_assertion_missing() {
 }
 
 #[tokio::test]
-async fn okta_session_based_saml() {
-    let server = MockServer::start().await;
-
-    let saml_html = r#"<html>
-<body>
-<form method="post">
-    <input type="hidden" name="SAMLResponse" value="c2Vzc2lvbi1iYXNlZC1zYW1s"/>
-</form>
-</body>
-</html>"#;
-
-    Mock::given(method("GET"))
-        .and(path("/home/amazon_aws/0oa_session/272"))
-        .and(header("cookie", "sid=cached-session-id-xyz"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(saml_html))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let client = OktaClient::with_base_url(&server.uri()).unwrap();
-    let app_url = format!("{}/home/amazon_aws/0oa_session/272", server.uri());
-    let result = client
-        .get_saml_with_session("cached-session-id-xyz", &app_url)
+async fn okta_session_reuse_is_disabled() {
+    let client = OktaClient::with_base_url("https://example.okta.com").unwrap();
+    let err = client
+        .get_saml_with_session(
+            "cached-session-id-xyz",
+            "https://example.okta.com/home/amazon_aws/0oa_session/272",
+        )
         .await
-        .unwrap();
-
-    assert_eq!(result, "c2Vzc2lvbi1iYXNlZC1zYW1s");
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("disabled"),
+        "expected disabled error, got: {err}"
+    );
 }
 
 #[tokio::test]
-async fn okta_session_expired_redirect() {
-    let server = MockServer::start().await;
-
-    // When the session is expired, Okta returns a redirect.
-    Mock::given(method("GET"))
-        .and(path("/home/amazon_aws/0oa_expired/272"))
-        .respond_with(
-            ResponseTemplate::new(302).insert_header("location", "https://login.okta.com"),
+async fn okta_validated_saml_rejects_existing_session_token_query() {
+    let client = OktaClient::with_base_url("https://example.okta.com").unwrap();
+    let session_token = Zeroizing::new("token".to_string());
+    let err = client
+        .get_saml_assertion_for_org(
+            &session_token,
+            "https://example.okta.com/home/amazon_aws/0oa123/272?sessionToken=evil",
+            "example.okta.com",
         )
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let client = OktaClient::with_base_url(&server.uri()).unwrap();
-    let app_url = format!("{}/home/amazon_aws/0oa_expired/272", server.uri());
-    let result = client
-        .get_saml_with_session("expired-session-id", &app_url)
-        .await;
-
-    let err = result.unwrap_err();
-    let msg = err.to_string();
+        .await
+        .unwrap_err();
     assert!(
-        msg.contains("expired") || msg.contains("redirect"),
-        "expected session-expired error: {msg}"
+        err.to_string()
+            .contains("must not include a sessionToken query parameter"),
+        "expected sessionToken validation error, got: {err}"
     );
 }
 

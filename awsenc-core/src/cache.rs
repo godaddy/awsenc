@@ -258,25 +258,7 @@ pub fn delete_cache(profile: &str) -> Result<()> {
 
 /// Validate a profile name: alphanumeric, hyphens, underscores only, max 64 characters.
 pub fn sanitize_profile_name(name: &str) -> Result<String> {
-    if name.is_empty() {
-        return Err(Error::InvalidProfileName(
-            "profile name cannot be empty".into(),
-        ));
-    }
-    if name.len() > 64 {
-        return Err(Error::InvalidProfileName(format!(
-            "profile name exceeds 64 characters: {name}"
-        )));
-    }
-    if !name
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        return Err(Error::InvalidProfileName(format!(
-            "profile name contains invalid characters (only alphanumeric, hyphens, underscores allowed): {name}"
-        )));
-    }
-    Ok(name.to_owned())
+    crate::config::validate_profile_name(name)
 }
 
 #[cfg(test)]

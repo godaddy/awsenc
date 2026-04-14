@@ -76,7 +76,7 @@ awsenc/
       config.rs                 # Configuration loading (TOML + env vars)
       cache.rs                  # Credential cache format, lifecycle
       credential.rs             # AWS credential types
-      okta.rs                   # Okta session, SAML assertion
+      okta.rs                   # Okta authn + SAML assertion fetch
       sts.rs                    # AWS STS AssumeRoleWithSAML
       mfa.rs                    # MFA factor handling
       profile.rs                # AWS profile management
@@ -248,13 +248,11 @@ The CLI prints a message like `Waiting for browser authentication...` and blocks
 
 This needs prototyping against GoDaddy's Okta instance to determine what's actually possible. Deferred to Phase 6 but with a clear implementation path. YubiKey legacy OTP is the proven, working path and is the only hardware MFA factor supported in Phase 1.
 
-### Okta Session Caching
+### Okta Session Reuse Status
 
-Okta sessions are expensive to establish (MFA required). The Okta session token is cached encrypted alongside AWS credentials but with a separate lifecycle:
-
-- Okta sessions typically last 2 hours.
-- Reuse the cached Okta session to obtain new SAML assertions without re-authenticating.
-- If the Okta session is expired, trigger full re-authentication including MFA.
+Transparent Okta session reuse is currently disabled. The checked-in runtime
+does not cache a browser session or replay `/authn` session material as a
+cookie. When AWS credentials expire, the user must run `awsenc auth` again.
 
 ---
 
@@ -266,13 +264,13 @@ Binary cache format:
 Offset  Length  Field
 0       4       Magic bytes: "AWSE" (0x41 0x57 0x53 0x45)
 4       1       Format version: 0x01
-5       1       Flags (bit 0: has_okta_session)
+5       1       Flags (bit 0 reserved; currently always 0)
 6       8       Credential expiration (Unix epoch seconds, big-endian)
-14      8       Okta session expiration (Unix epoch seconds, big-endian)
+14      8       Reserved / set to 0
 22      4       AWS ciphertext length (big-endian)
 26      var     AWS credential ciphertext (ECIES blob)
-26+N    4       Okta session ciphertext length (big-endian, 0 if no session)
-30+N    var     Okta session ciphertext (ECIES blob, absent if length=0)
+26+N    4       Reserved payload length (currently 0)
+30+N    var     Reserved payload (currently absent)
 ```
 
 ### Cache File Locations
@@ -292,10 +290,10 @@ Proactive refresh pattern, adapted for AWS STS credential behavior:
 | State | Condition | Action |
 |-------|-----------|--------|
 | **Fresh** | > 10 min until expiration | Decrypt and return cached credentials |
-| **Refresh** | < 10 min until expiration | Attempt re-authentication in background; return cached if still valid |
-| **Expired** | Past expiration | Full re-authentication required |
+| **Refresh** | < 10 min until expiration | Decrypt and return cached credentials while still valid |
+| **Expired** | Past expiration | Exit non-zero; user must run `awsenc auth` |
 
-AWS STS session credentials have a fixed expiration (default 1 hour, configurable 15 min to 12 hours via `--duration`). Unlike JWTs, they cannot be "refreshed" -- a new `AssumeRoleWithSAML` call is required. However, if the Okta session is still valid, this is transparent to the user (no MFA prompt).
+AWS STS session credentials have a fixed expiration (default 1 hour, configurable 15 min to 12 hours via `--duration`). Unlike JWTs, they cannot be "refreshed" in place -- a new `AssumeRoleWithSAML` call is required, and the current implementation requires an explicit `awsenc auth` for that reauthentication path.
 
 ### Encryption
 
@@ -533,7 +531,7 @@ awsenc auth --profile my-account --factor push --duration 3600
 
 ### awsenc serve
 
-Non-interactive. Returns credentials as JSON to stdout. This is what `credential_process` calls. If credentials are cached and valid, returns them immediately. If expired, attempts transparent re-auth using cached Okta session. If Okta session is also expired, exits non-zero with an error on stderr instructing the user to run `awsenc auth`.
+Non-interactive. Returns credentials as JSON to stdout. This is what `credential_process` calls. If credentials are cached and valid, returns them immediately. If expired, it exits non-zero with an error on stderr instructing the user to run `awsenc auth`.
 
 ```
 awsenc serve --profile my-account
@@ -632,13 +630,15 @@ refresh_window_seconds = 600  # Start background refresh 10 min before expiry
 ```toml
 [okta]
 organization = "mycompany.okta.com"     # Override global
+user = "jdoe"
 application = "https://mycompany.okta.com/home/amazon_aws/0oa.../272"
 role = "arn:aws:iam::123456789012:role/MyRole"
 factor = "push"                          # Override global
 duration = 3600                          # STS session duration in seconds
+region = "us-west-2"
 
-[okta.secondary_role]                    # Optional chained role assumption
-role_arn = "arn:aws:iam::987654321098:role/CrossAccountRole"
+[security]
+biometric = true
 ```
 
 ### Configuration Precedence
@@ -655,7 +655,7 @@ CLI flags > Environment variables (`AWSENC_*`) > Per-profile TOML > Global TOML 
 | `AWSENC_FACTOR` | Default MFA factor |
 | `AWSENC_BIOMETRIC` | Require biometric (`true`/`false`) |
 
-Note: No `AWSENC_OKTA_PASS` variable. Passwords are prompted interactively or retrieved from the system keychain. We do not encourage ambient password storage.
+Note: No `AWSENC_OKTA_PASS` variable. Passwords are prompted interactively or provided via `--pass-stdin` for automation. We do not encourage ambient password storage.
 
 ---
 
@@ -664,8 +664,7 @@ Note: No `AWSENC_OKTA_PASS` variable. Passwords are prompted interactively or re
 Unlike `aws-okta-processor` which accepts passwords via `AWS_OKTA_PASS` environment variable, `awsenc` takes a defense-in-depth approach:
 
 1. **Interactive prompt** (default): Secure terminal input with no echo.
-2. **System keychain** (optional): Store the Okta password in macOS Keychain / Windows Credential Manager using the same hardware-backed storage. Retrieve it automatically on subsequent runs.
-3. **Stdin pipe** (for automation): `echo "$pass" | awsenc auth --profile foo --pass-stdin`. Documented but discouraged for interactive use.
+2. **Stdin pipe** (for automation): `echo "$pass" | awsenc auth --profile foo --pass-stdin`. Documented but discouraged for interactive use.
 
 No environment variable for passwords. This is intentional and a departure from `aws-okta-processor`.
 
@@ -679,8 +678,7 @@ No environment variable for passwords. This is intentional and a departure from 
 |-------|-----------|
 | AWS session credentials at rest | ECIES encrypted, hardware-bound key |
 | AWS session credentials in transit | Only in process memory, only during `serve` / `exec` |
-| Okta session token at rest | ECIES encrypted alongside AWS credentials |
-| Okta password | Interactive prompt or system keychain; never on disk or in env |
+| Okta password | Interactive prompt or stdin pipe; never on disk or in env |
 | Hardware encryption key | Non-exportable, generated inside SE/TPM |
 
 ### What Is NOT Protected
@@ -698,7 +696,7 @@ No environment variable for passwords. This is intentional and a departure from 
 
 - `Zeroizing<Vec<u8>>` wrappers for all credential buffers.
 - `unsafe` code denied at workspace level except FFI callsites.
-- No `unwrap()` or `panic!()` in non-test code.
+- Avoid `unwrap()` / `panic!()` in non-test runtime paths; remaining non-test callsites should be treated as cleanup debt.
 
 ### File Permissions
 
@@ -793,10 +791,10 @@ The Windows MSI installs both `awsenc.exe` and `awsenc-tpm-bridge.exe`, and opti
 | `--role` / `AWS_OKTA_ROLE` | `--role` / config `okta.role` |
 | `--factor` / `AWS_OKTA_FACTOR` | `--factor` / `AWSENC_FACTOR` / config `okta.factor` |
 | `--duration` / `AWS_OKTA_DURATION` | `--duration` / config `okta.duration` |
-| `--secondary-role` | config `okta.secondary_role.role_arn` |
+| `--secondary-role` | Unsupported; migration skips these profiles with an explicit warning |
 | `--environment` | `awsenc exec` (no direct equivalent; env export is discouraged) |
 | `--key` | `--profile` (profile name serves as cache key) |
-| `--pass` / `AWS_OKTA_PASS` | Interactive prompt or keychain (no env var) |
+| `--pass` / `AWS_OKTA_PASS` | Interactive prompt or `--pass-stdin` (no env var) |
 
 ### awsenc migrate
 
@@ -806,7 +804,7 @@ Optional migration helper:
 awsenc migrate
 ```
 
-Scans `~/.aws/config` and `~/.aws/credentials` for `credential_process=aws-okta-processor` entries, parses their flags, and generates equivalent `awsenc` profile configs. Writes the new config files and updates `~/.aws/config` with `credential_process=awsenc serve` directives. The original entries are commented out, not deleted.
+Scans `~/.aws/config` and `~/.aws/credentials` for `credential_process=aws-okta-processor` entries, parses their flags, and generates equivalent `awsenc` profile configs. Writes the new config files, comments out the original `credential_process` lines, and updates `~/.aws/config` with `credential_process=awsenc serve` directives. Profiles using `--secondary-role` are skipped with an explicit warning.
 
 ---
 
@@ -865,7 +863,7 @@ Options:
   -f, --factor <TYPE>           MFA factor type (overrides config)
   -d, --duration <SECONDS>      STS session duration (default: 3600)
       --biometric               Require biometric for this session's cache
-      --no-open                 Don't auto-open browser for WebAuthn
+      --no-open                 Reserved for future browser-based WebAuthn flow; currently returns an unsupported error
       --pass-stdin              Read password from stdin
 ```
 
@@ -991,7 +989,7 @@ Following the testing patterns from `sshenc` (159 tests, 6 categories):
 
 1. **Unit tests**: Config parsing, cache format encode/decode, credential serialization, profile management, SAML parsing.
 2. **Mock storage tests**: Full auth flow with mock `SecureStorage` impl. No hardware required.
-3. **HTTP mock tests**: Okta API and STS API responses using `wiremock` or `mockito`. Test MFA flows, error cases, session reuse.
+3. **HTTP mock tests**: Okta API and STS API responses using `wiremock` or `mockito`. Test MFA flows, error cases, and trusted-host validation.
 4. **Integration tests**: CLI invocation tests (`assert_cmd`). Test `serve` output format, `install`/`uninstall` idempotency, `exec` environment isolation.
 5. **Cache lifecycle tests**: Fresh/refresh/expired state transitions with controlled timestamps.
 6. **Hardware integration tests**: Actual SE/TPM encrypt/decrypt. Requires hardware; skipped in CI. Tagged `#[ignore]` and run manually.
@@ -1043,7 +1041,7 @@ GitHub Actions with matrix builds across macOS, Windows, and Linux. Hardware tes
 - Threat model document.
 - README and user documentation.
 - Secondary role assumption (chained AssumeRole).
-- Okta password keychain integration.
+- Optional password manager integration.
 
 ### Phase 6: WebAuthn via Browser Loopback
 

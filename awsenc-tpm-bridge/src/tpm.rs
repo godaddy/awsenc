@@ -14,53 +14,51 @@ mod platform {
     use enclaveapp_core::types::{AccessPolicy, KeyType};
     use enclaveapp_windows::TpmEncryptor;
 
-    /// Application name for key namespacing.
-    const APP_NAME: &str = "awsenc";
-
-    /// Key label for the TPM bridge encryption key.
-    const KEY_LABEL: &str = "cache-key";
-
     pub struct TpmStorage {
         encryptor: TpmEncryptor,
-        #[allow(dead_code)]
-        biometric: bool,
+        key_label: String,
     }
 
     impl TpmStorage {
-        pub fn new(biometric: bool) -> Result<Self, String> {
-            let encryptor = TpmEncryptor::new(APP_NAME);
+        pub fn new(
+            app_name: &str,
+            key_label: &str,
+            access_policy: AccessPolicy,
+        ) -> Result<Self, String> {
+            let encryptor = TpmEncryptor::new(app_name);
 
             if !encryptor.is_available() {
                 return Err("TPM not available".to_string());
             }
 
             // Ensure the key exists; generate if missing.
-            if encryptor.public_key(KEY_LABEL).is_err() {
-                let policy = if biometric {
-                    AccessPolicy::BiometricOnly
-                } else {
-                    AccessPolicy::None
-                };
+            if encryptor.public_key(key_label).is_err() {
                 encryptor
-                    .generate(KEY_LABEL, KeyType::Encryption, policy)
+                    .generate(key_label, KeyType::Encryption, access_policy)
                     .map_err(|e| format!("key generation failed: {e}"))?;
             }
 
             Ok(Self {
                 encryptor,
-                biometric,
+                key_label: key_label.to_owned(),
             })
         }
 
         pub fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>, String> {
             self.encryptor
-                .encrypt(KEY_LABEL, plaintext)
+                .encrypt(&self.key_label, plaintext)
                 .map_err(|e| e.to_string())
         }
 
         pub fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>, String> {
             self.encryptor
-                .decrypt(KEY_LABEL, ciphertext)
+                .decrypt(&self.key_label, ciphertext)
+                .map_err(|e| e.to_string())
+        }
+
+        pub fn destroy(&self) -> Result<(), String> {
+            self.encryptor
+                .delete_key(&self.key_label)
                 .map_err(|e| e.to_string())
         }
     }
@@ -69,14 +67,20 @@ mod platform {
 #[cfg(not(target_os = "windows"))]
 mod platform {
     pub struct TpmStorage {
-        _biometric: bool,
+        _app_name: String,
+        _key_label: String,
     }
 
     impl TpmStorage {
         #[allow(clippy::unnecessary_wraps)]
-        pub fn new(biometric: bool) -> Result<Self, String> {
+        pub fn new(
+            app_name: &str,
+            key_label: &str,
+            _access_policy: enclaveapp_core::AccessPolicy,
+        ) -> Result<Self, String> {
             Ok(Self {
-                _biometric: biometric,
+                _app_name: app_name.to_owned(),
+                _key_label: key_label.to_owned(),
             })
         }
 
@@ -87,6 +91,11 @@ mod platform {
 
         #[allow(clippy::unused_self)]
         pub fn decrypt(&self, _ciphertext: &[u8]) -> Result<Vec<u8>, String> {
+            Err("TPM bridge is only supported on Windows".to_string())
+        }
+
+        #[allow(clippy::unused_self)]
+        pub fn destroy(&self) -> Result<(), String> {
             Err("TPM bridge is only supported on Windows".to_string())
         }
     }

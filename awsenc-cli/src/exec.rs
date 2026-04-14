@@ -143,9 +143,6 @@ mod tests {
     use super::*;
     use enclaveapp_app_storage::mock::MockEncryptionStorage as MockStorage;
 
-    // Mutex to serialize tests that modify the HOME env var
-    static HOME_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     fn setup_temp_home(tmp: &tempfile::TempDir) -> Option<String> {
         let prev = std::env::var("HOME").ok();
         let config_dir = tmp.path().join(".config").join("awsenc");
@@ -163,7 +160,9 @@ mod tests {
 
     #[test]
     fn get_cached_credentials_returns_none_when_no_cache() {
-        let _lock = HOME_MUTEX.lock().expect("mutex poisoned");
+        let _lock = crate::test_support::ENV_MUTEX
+            .lock()
+            .expect("mutex poisoned");
         let tmp = tempfile::tempdir().unwrap();
         let prev = setup_temp_home(&tmp);
         let storage = MockStorage::new();
@@ -177,7 +176,9 @@ mod tests {
         use awsenc_core::cache::{self, CacheFile, CacheHeader, FORMAT_VERSION, MAGIC};
         use zeroize::Zeroizing;
 
-        let _lock = HOME_MUTEX.lock().expect("mutex poisoned");
+        let _lock = crate::test_support::ENV_MUTEX
+            .lock()
+            .expect("mutex poisoned");
         let tmp = tempfile::tempdir().unwrap();
         let prev = setup_temp_home(&tmp);
         let storage = MockStorage::new();
@@ -222,7 +223,9 @@ mod tests {
         use awsenc_core::cache::{self, CacheFile, CacheHeader, FORMAT_VERSION, MAGIC};
         use zeroize::Zeroizing;
 
-        let _lock = HOME_MUTEX.lock().expect("mutex poisoned");
+        let _lock = crate::test_support::ENV_MUTEX
+            .lock()
+            .expect("mutex poisoned");
         let tmp = tempfile::tempdir().unwrap();
         let prev = setup_temp_home(&tmp);
         let storage = MockStorage::new();
@@ -295,9 +298,14 @@ mod tests {
 
     #[test]
     fn get_profile_region_returns_none_for_nonexistent() {
+        let _lock = crate::test_support::ENV_MUTEX
+            .lock()
+            .expect("mutex poisoned");
         let tmp = tempfile::tempdir().unwrap();
+        let prev = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
         assert!(get_profile_region("nonexistent-profile").is_none());
+        restore_home(prev);
     }
 
     #[tokio::test]

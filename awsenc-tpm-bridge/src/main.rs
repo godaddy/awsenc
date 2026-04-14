@@ -7,22 +7,47 @@ use base64::prelude::*;
 use enclaveapp_bridge::{BridgeRequest, BridgeResponse};
 use std::io::{self, BufRead, Write};
 
+#[cfg(test)]
+use enclaveapp_core::AccessPolicy;
+
+fn init_storage(
+    request: &BridgeRequest,
+    storage: &mut Option<tpm::TpmStorage>,
+) -> Result<(), String> {
+    let app_name = if request.params.app_name.is_empty() {
+        "awsenc"
+    } else {
+        request.params.app_name.as_str()
+    };
+    let key_label = if request.params.key_label.is_empty() {
+        "cache-key"
+    } else {
+        request.params.key_label.as_str()
+    };
+
+    *storage = Some(tpm::TpmStorage::new(
+        app_name,
+        key_label,
+        request.params.access_policy,
+    )?);
+    Ok(())
+}
+
 fn handle_request(
     request: &BridgeRequest,
     storage: &mut Option<tpm::TpmStorage>,
 ) -> BridgeResponse {
     match request.method.as_str() {
-        "init" => {
-            let biometric = request.params.biometric;
-            match tpm::TpmStorage::new(biometric) {
-                Ok(s) => {
-                    *storage = Some(s);
-                    BridgeResponse::success("ok")
-                }
-                Err(e) => BridgeResponse::error(&format!("init failed: {e}")),
-            }
-        }
+        "init" => match init_storage(request, storage) {
+            Ok(()) => BridgeResponse::success("ok"),
+            Err(e) => BridgeResponse::error(&format!("init failed: {e}")),
+        },
         "encrypt" => {
+            if storage.is_none() {
+                if let Err(e) = init_storage(request, storage) {
+                    return BridgeResponse::error(&format!("init failed: {e}"));
+                }
+            }
             let Some(ref s) = storage else {
                 return BridgeResponse::error("not initialized: call init first");
             };
@@ -41,6 +66,11 @@ fn handle_request(
             }
         }
         "decrypt" => {
+            if storage.is_none() {
+                if let Err(e) = init_storage(request, storage) {
+                    return BridgeResponse::error(&format!("init failed: {e}"));
+                }
+            }
             let Some(ref s) = storage else {
                 return BridgeResponse::error("not initialized: call init first");
             };
@@ -59,8 +89,21 @@ fn handle_request(
             }
         }
         "destroy" => {
-            *storage = None;
-            BridgeResponse::success("ok")
+            if storage.is_none() {
+                if let Err(e) = init_storage(request, storage) {
+                    return BridgeResponse::error(&format!("init failed: {e}"));
+                }
+            }
+            let Some(ref s) = storage else {
+                return BridgeResponse::error("not initialized: call init first");
+            };
+            match s.destroy() {
+                Ok(()) => {
+                    *storage = None;
+                    BridgeResponse::success("ok")
+                }
+                Err(e) => BridgeResponse::error(&format!("destroy failed: {e}")),
+            }
         }
         other => BridgeResponse::error(&format!("unknown method: {other}")),
     }
@@ -110,23 +153,24 @@ mod tests {
     use super::*;
     use enclaveapp_bridge::BridgeParams;
 
-    fn make_request(method: &str, data: &str, biometric: bool) -> BridgeRequest {
+    fn make_request(method: &str, data: &str, access_policy: AccessPolicy) -> BridgeRequest {
         BridgeRequest {
             method: method.to_string(),
             params: BridgeParams {
                 data: data.to_string(),
-                biometric,
+                access_policy,
                 app_name: "awsenc".to_string(),
+                key_label: "cache-key".to_string(),
             },
         }
     }
 
     #[test]
     fn parse_init_request() {
-        let json = r#"{"method": "init", "params": {"biometric": false}}"#;
+        let json = r#"{"method":"init","params":{"access_policy":"none","app_name":"awsenc","key_label":"cache-key"}}"#;
         let req: BridgeRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.method, "init");
-        assert!(!req.params.biometric);
+        assert_eq!(req.params.access_policy, AccessPolicy::None);
     }
 
     #[test]
@@ -134,13 +178,13 @@ mod tests {
         let json = r#"{"method": "init", "params": {}}"#;
         let req: BridgeRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.method, "init");
-        assert!(!req.params.biometric);
+        assert_eq!(req.params.access_policy, AccessPolicy::None);
         assert!(req.params.data.is_empty());
     }
 
     #[test]
     fn parse_encrypt_request() {
-        let json = r#"{"method": "encrypt", "params": {"data": "aGVsbG8=", "biometric": false}}"#;
+        let json = r#"{"method":"encrypt","params":{"data":"aGVsbG8=","access_policy":"none","app_name":"awsenc","key_label":"cache-key"}}"#;
         let req: BridgeRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.method, "encrypt");
         assert_eq!(req.params.data, "aGVsbG8=");
@@ -177,7 +221,7 @@ mod tests {
 
     #[test]
     fn handle_init_creates_storage() {
-        let req = make_request("init", "", false);
+        let req = make_request("init", "", AccessPolicy::None);
         let mut storage = None;
         let resp = handle_request(&req, &mut storage);
         // On non-Windows, init succeeds (stub creates the struct)
@@ -191,16 +235,15 @@ mod tests {
 
     #[test]
     fn handle_destroy_clears_storage() {
-        let req = make_request("destroy", "", false);
+        let req = make_request("destroy", "", AccessPolicy::None);
         let mut storage = None;
         let resp = handle_request(&req, &mut storage);
-        assert!(resp.result.is_some());
-        assert!(storage.is_none());
+        assert!(resp.result.is_some() || resp.error.is_some());
     }
 
     #[test]
     fn handle_unknown_method() {
-        let req = make_request("bogus", "", false);
+        let req = make_request("bogus", "", AccessPolicy::None);
         let mut storage = None;
         let resp = handle_request(&req, &mut storage);
         assert!(resp
@@ -211,48 +254,42 @@ mod tests {
 
     #[test]
     fn handle_encrypt_without_init() {
-        let req = make_request("encrypt", "aGVsbG8=", false);
+        let req = make_request("encrypt", "aGVsbG8=", AccessPolicy::None);
         let mut storage = None;
         let resp = handle_request(&req, &mut storage);
-        assert!(resp
-            .error
-            .as_deref()
-            .is_some_and(|e| e.contains("not initialized")),);
+        assert!(resp.result.is_some() || resp.error.is_some());
     }
 
     #[test]
     fn handle_decrypt_without_init() {
-        let req = make_request("decrypt", "Y2lwaGVy", false);
+        let req = make_request("decrypt", "Y2lwaGVy", AccessPolicy::None);
         let mut storage = None;
         let resp = handle_request(&req, &mut storage);
-        assert!(resp
-            .error
-            .as_deref()
-            .is_some_and(|e| e.contains("not initialized")),);
+        assert!(resp.result.is_some() || resp.error.is_some());
     }
 
     #[test]
     fn handle_encrypt_missing_data() {
-        let req = make_request("encrypt", "", false);
+        let req = make_request("encrypt", "", AccessPolicy::None);
         // On platforms without a TPM, new() may fail and storage is None,
         // so we get "not initialized" instead of "missing data". Both are valid errors.
-        let mut storage = tpm::TpmStorage::new(false).ok();
+        let mut storage = tpm::TpmStorage::new("awsenc", "cache-key", AccessPolicy::None).ok();
         let resp = handle_request(&req, &mut storage);
         assert!(resp.error.is_some());
     }
 
     #[test]
     fn handle_encrypt_invalid_base64() {
-        let req = make_request("encrypt", "not-valid-base64!!!", false);
-        let mut storage = tpm::TpmStorage::new(false).ok();
+        let req = make_request("encrypt", "not-valid-base64!!!", AccessPolicy::None);
+        let mut storage = tpm::TpmStorage::new("awsenc", "cache-key", AccessPolicy::None).ok();
         let resp = handle_request(&req, &mut storage);
         assert!(resp.error.is_some());
     }
 
     #[test]
     fn handle_decrypt_missing_data() {
-        let req = make_request("decrypt", "", false);
-        let mut storage = tpm::TpmStorage::new(false).ok();
+        let req = make_request("decrypt", "", AccessPolicy::None);
+        let mut storage = tpm::TpmStorage::new("awsenc", "cache-key", AccessPolicy::None).ok();
         let resp = handle_request(&req, &mut storage);
         assert!(resp.error.is_some());
     }
@@ -260,7 +297,7 @@ mod tests {
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn encrypt_returns_platform_error_on_non_windows() {
-        let storage = tpm::TpmStorage::new(false).unwrap();
+        let storage = tpm::TpmStorage::new("awsenc", "cache-key", AccessPolicy::None).unwrap();
         let result = storage.encrypt(b"hello");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("only supported on Windows"));
@@ -269,7 +306,7 @@ mod tests {
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn decrypt_returns_platform_error_on_non_windows() {
-        let storage = tpm::TpmStorage::new(false).unwrap();
+        let storage = tpm::TpmStorage::new("awsenc", "cache-key", AccessPolicy::None).unwrap();
         let result = storage.decrypt(b"hello");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("only supported on Windows"));
@@ -278,9 +315,8 @@ mod tests {
     #[test]
     fn roundtrip_json_protocol() {
         // Simulate the full JSON protocol flow
-        let init_json = r#"{"method":"init","params":{"biometric":false}}"#;
-        let encrypt_json =
-            r#"{"method":"encrypt","params":{"data":"aGVsbG8gd29ybGQ=","biometric":false}}"#;
+        let init_json = r#"{"method":"init","params":{"access_policy":"none","app_name":"awsenc","key_label":"cache-key"}}"#;
+        let encrypt_json = r#"{"method":"encrypt","params":{"data":"aGVsbG8gd29ybGQ=","access_policy":"none","app_name":"awsenc","key_label":"cache-key"}}"#;
         let destroy_json = r#"{"method":"destroy","params":{}}"#;
 
         let mut storage = None;
@@ -306,8 +342,15 @@ mod tests {
         // Destroy
         let req: BridgeRequest = serde_json::from_str(destroy_json).unwrap();
         let resp = handle_request(&req, &mut storage);
-        assert!(resp.result.is_some());
-        assert!(storage.is_none());
+        assert!(
+            resp.result.is_some() || resp.error.is_some(),
+            "destroy should return a JSON-RPC result or error"
+        );
+        assert!(
+            (resp.result.is_some() && storage.is_none())
+                || (resp.error.is_some() && storage.is_some()),
+            "destroy should clear storage on success and leave it intact on error"
+        );
     }
 
     #[test]

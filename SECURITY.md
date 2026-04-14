@@ -40,8 +40,10 @@ awsenc encrypts AWS session credentials at rest using hardware-backed keys:
 - **No ambient environment variables.** The AWS CLI fetches credentials on
   demand via `credential_process`. Credentials are never exported into the
   shell environment.
-- **In-memory credential buffers are zeroized on drop.** All sensitive data
-  uses `Zeroizing<Vec<u8>>` to prevent residual memory exposure.
+- **AWS credential buffers use `Zeroizing` where practical.** The current
+  implementation minimizes secret lifetime in memory and avoids writing
+  credentials to disk or logs, but not every Okta request field is uniformly
+  wrapped in `Zeroizing`.
 - **File permissions are restrictive.** Directories are 0700, files are 0600.
 
 ### What awsenc does NOT protect against
