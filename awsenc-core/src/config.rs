@@ -191,6 +191,16 @@ pub fn load_global_config() -> Result<GlobalConfig> {
     Ok(config)
 }
 
+/// Save the global config to `~/.config/awsenc/config.toml`.
+/// Uses atomic write + restrictive permissions to avoid a window where the
+/// file is world-readable.
+pub fn save_global_config(config: &GlobalConfig) -> Result<()> {
+    let path = config_dir()?.join("config.toml");
+    let contents = toml::to_string_pretty(config)?;
+    write_private_file(&path, contents.as_bytes())?;
+    Ok(())
+}
+
 /// Load a profile config from `~/.config/awsenc/profiles/<name>.toml`.
 pub fn load_profile_config(name: &str) -> Result<ProfileConfig> {
     let path = profile_config_path(name)?;
