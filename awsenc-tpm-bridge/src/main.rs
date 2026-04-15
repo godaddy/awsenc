@@ -450,6 +450,69 @@ mod tests {
         assert!(result.is_err());
     }
 
+    // ----- effective_access_policy exhaustive variant tests -----
+
+    #[test]
+    fn effective_access_policy_none_without_biometric() {
+        let json = r#"{"method":"init","params":{}}"#;
+        let req: BridgeRequestCompat = serde_json::from_str(json).unwrap();
+        assert_eq!(req.params.effective_access_policy(), AccessPolicy::None);
+    }
+
+    #[test]
+    fn effective_access_policy_any() {
+        let json = r#"{"method":"init","params":{"access_policy":"any"}}"#;
+        let req: BridgeRequestCompat = serde_json::from_str(json).unwrap();
+        assert_eq!(req.params.effective_access_policy(), AccessPolicy::Any);
+    }
+
+    #[test]
+    fn effective_access_policy_password_only() {
+        let json = r#"{"method":"init","params":{"access_policy":"password_only"}}"#;
+        let req: BridgeRequestCompat = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            req.params.effective_access_policy(),
+            AccessPolicy::PasswordOnly
+        );
+    }
+
+    // ----- Legacy payload defaults -----
+
+    #[test]
+    fn legacy_payload_with_no_params_defaults_to_none() {
+        let json = r#"{"method":"init","params":{}}"#;
+        let req: BridgeRequestCompat = serde_json::from_str(json).unwrap();
+        assert_eq!(req.params.effective_access_policy(), AccessPolicy::None);
+        assert_eq!(req.params.app_name, "");
+        assert_eq!(req.params.key_label, "");
+    }
+
+    // ----- Biometric and access_policy coexistence -----
+
+    #[test]
+    fn biometric_and_access_policy_coexist_in_json() {
+        let json = r#"{"method":"init","params":{"access_policy":"biometric_only","biometric":true,"app_name":"test","key_label":"k"}}"#;
+        let req: BridgeRequestCompat = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            req.params.effective_access_policy(),
+            AccessPolicy::BiometricOnly
+        );
+    }
+
+    // ----- Fallback when access_policy absent but biometric true -----
+
+    #[test]
+    fn unknown_access_policy_with_biometric_true_falls_back() {
+        // When access_policy is absent but biometric is true
+        let json =
+            r#"{"method":"init","params":{"biometric":true,"app_name":"a","key_label":"k"}}"#;
+        let req: BridgeRequestCompat = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            req.params.effective_access_policy(),
+            AccessPolicy::BiometricOnly
+        );
+    }
+
     #[test]
     fn legacy_biometric_true_maps_to_biometric_only() {
         let json = r#"{"method": "init", "params": {"biometric": true}}"#;
