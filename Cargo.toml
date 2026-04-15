@@ -50,6 +50,8 @@ enclaveapp-wsl = { path = "../libenclaveapp/crates/enclaveapp-wsl" }
 enclaveapp-software = { path = "../libenclaveapp/crates/enclaveapp-software", features = ["encryption", "keyring-storage"] }
 enclaveapp-test-support = { path = "../libenclaveapp/crates/enclaveapp-test-support" }
 enclaveapp-app-storage = { path = "../libenclaveapp/crates/enclaveapp-app-storage" }
+enclaveapp-tpm-bridge = { path = "../libenclaveapp/crates/enclaveapp-tpm-bridge" }
+enclaveapp-cache = { path = "../libenclaveapp/crates/enclaveapp-cache" }
 
 [workspace.lints.clippy]
 default_union_representation = "deny"
