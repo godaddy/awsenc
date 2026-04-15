@@ -43,3 +43,7 @@ Uses `libenclaveapp` (path dependency at `../`) for all hardware-backed cryptogr
 - Windows: TPM 2.0 via CNG (libenclaveapp)
 - WSL: JSON-RPC bridge to Windows TPM
 - Linux: Software AES-256-GCM fallback with keyring encryption
+
+## Commits
+
+Do not add Co-Authored-By lines for Claude Code in commit messages.
