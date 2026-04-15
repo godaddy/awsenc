@@ -191,6 +191,16 @@ pub fn load_global_config() -> Result<GlobalConfig> {
     Ok(config)
 }
 
+/// Save the global config to `~/.config/awsenc/config.toml`.
+/// Uses atomic write + restrictive permissions to avoid a window where the
+/// file is world-readable.
+pub fn save_global_config(config: &GlobalConfig) -> Result<()> {
+    let path = config_dir()?.join("config.toml");
+    let contents = toml::to_string_pretty(config)?;
+    write_private_file(&path, contents.as_bytes())?;
+    Ok(())
+}
+
 /// Load a profile config from `~/.config/awsenc/profiles/<name>.toml`.
 pub fn load_profile_config(name: &str) -> Result<ProfileConfig> {
     let path = profile_config_path(name)?;
@@ -679,5 +689,88 @@ mod tests {
         let overrides = ConfigOverrides::from_env();
         std::env::remove_var("AWSENC_REGION");
         assert_eq!(overrides.region.as_deref(), Some("ap-southeast-2"));
+    }
+
+    // ----- save_global_config tests -----
+
+    #[test]
+    fn save_global_config_creates_file() {
+        let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
+        let tmp = tempfile::tempdir().unwrap();
+        let xdg_dir = tmp.path().to_path_buf();
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        std::env::set_var("XDG_CONFIG_HOME", &xdg_dir);
+
+        let mut config = GlobalConfig::default();
+        config.okta.organization = Some("test-org.okta.com".into());
+        save_global_config(&config).unwrap();
+
+        let path = xdg_dir.join("awsenc").join("config.toml");
+        assert!(path.exists(), "config.toml should be created");
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let parsed: GlobalConfig = toml::from_str(&contents).unwrap();
+        assert_eq!(
+            parsed.okta.organization.as_deref(),
+            Some("test-org.okta.com")
+        );
+
+        match prev_xdg {
+            Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_global_config_sets_restricted_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
+        let tmp = tempfile::tempdir().unwrap();
+        let xdg_dir = tmp.path().to_path_buf();
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        std::env::set_var("XDG_CONFIG_HOME", &xdg_dir);
+
+        let config = GlobalConfig::default();
+        save_global_config(&config).unwrap();
+
+        let path = xdg_dir.join("awsenc").join("config.toml");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "config file should have 0600 permissions");
+
+        match prev_xdg {
+            Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+    }
+
+    #[test]
+    fn save_global_config_no_tmp_file_left() {
+        let _lock = crate::TEST_ENV_MUTEX.lock().expect("mutex poisoned");
+        let tmp = tempfile::tempdir().unwrap();
+        let xdg_dir = tmp.path().to_path_buf();
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        std::env::set_var("XDG_CONFIG_HOME", &xdg_dir);
+
+        let config = GlobalConfig::default();
+        save_global_config(&config).unwrap();
+
+        let awsenc_dir = xdg_dir.join("awsenc");
+        let entries: Vec<_> = std::fs::read_dir(&awsenc_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "tmp"))
+            .collect();
+        assert!(
+            entries.is_empty(),
+            "no .tmp files should remain after save: found {:?}",
+            entries.iter().map(|e| e.path()).collect::<Vec<_>>()
+        );
+
+        match prev_xdg {
+            Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
     }
 }
