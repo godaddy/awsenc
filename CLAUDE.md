@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Integration Type
 
-awsenc is a **Type 1 (HelperTool)** enclave app. It integrates with the AWS CLI via the `credential_process` directive in `~/.aws/config`. The AWS CLI calls awsenc on demand to retrieve credentials — secrets never leave awsenc's process boundary.
+awsenc is a [**Type 1 (HelperTool)**](https://github.com/godaddy/libenclaveapp/blob/main/DESIGN.md#type-1-helpertool) enclave app. It integrates with the AWS CLI via the `credential_process` directive in `~/.aws/config`. The AWS CLI calls awsenc on demand to retrieve credentials — secrets never leave awsenc's process boundary. See [libenclaveapp DESIGN.md](https://github.com/godaddy/libenclaveapp/blob/main/DESIGN.md#application-integration-types) for the full integration type taxonomy.
 
 ## Build & Development
 
