@@ -52,6 +52,7 @@ enclaveapp-test-support = { path = "../libenclaveapp/crates/enclaveapp-test-supp
 enclaveapp-app-storage = { path = "../libenclaveapp/crates/enclaveapp-app-storage" }
 enclaveapp-tpm-bridge = { path = "../libenclaveapp/crates/enclaveapp-tpm-bridge" }
 enclaveapp-cache = { path = "../libenclaveapp/crates/enclaveapp-cache" }
+enclaveapp-build-support = { path = "../libenclaveapp/crates/enclaveapp-build-support" }
 
 [workspace.lints.clippy]
 default_union_representation = "deny"

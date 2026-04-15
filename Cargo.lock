@@ -160,6 +160,7 @@ dependencies = [
  "crossterm",
  "dirs 5.0.1",
  "enclaveapp-app-storage",
+ "enclaveapp-build-support",
  "enclaveapp-core",
  "enclaveapp-wsl",
  "predicates",
@@ -172,7 +173,6 @@ dependencies = [
  "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
- "winresource",
  "zeroize",
 ]
 
@@ -698,6 +698,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "enclaveapp-build-support"
+version = "0.1.0"
+dependencies = [
+ "winresource",
+]
+
+[[package]]
 name = "enclaveapp-cache"
 version = "0.1.0"
 dependencies = [
@@ -755,6 +762,7 @@ dependencies = [
  "base64 0.22.1",
  "enclaveapp-bridge",
  "enclaveapp-core",
+ "enclaveapp-windows",
  "serde",
  "serde_json",
 ]

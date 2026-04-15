@@ -1,7 +1,9 @@
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 
+use enclaveapp_core::config_block::{self, BlockMarkers};
 use enclaveapp_core::metadata;
+use enclaveapp_core::quoting;
 use regex::Regex;
 
 use awsenc_core::cache;
@@ -402,65 +404,27 @@ fn build_managed_block(
     use std::fmt::Write;
 
     let profile_name = config::validate_profile_name(profile_name)?;
-    let binary_path = quote_credential_process_arg(binary_path);
-    let mut block = format!(
-        "# --- BEGIN awsenc managed ({profile_name}) ---\n\
-         [profile {profile_name}]\n\
-         credential_process = {binary_path} serve --profile {profile_name}\n"
+    let quoted_path = quoting::quote_config_value(binary_path);
+    let mut body = format!(
+        "[profile {profile_name}]\n\
+         credential_process = {quoted_path} serve --profile {profile_name}\n"
     );
     if let Some(r) = region {
-        let _ = writeln!(block, "region = {r}");
+        let _ = writeln!(body, "region = {r}");
     }
-    let _ = write!(block, "# --- END awsenc managed ({profile_name}) ---");
-    Ok(block)
+    let markers = BlockMarkers::with_id("awsenc", profile_name);
+    Ok(config_block::build_block(&markers, &body))
 }
 
 fn upsert_managed_block(existing: &str, profile_name: &str, new_block: &str) -> String {
-    if let Some((start, end)) = managed_block_range(existing, profile_name) {
-        let before = &existing[..start];
-        let after = &existing[end..];
-        format!("{before}{new_block}{after}")
-    } else {
-        // Append
-        let mut result = existing.to_owned();
-        if !result.is_empty() && !result.ends_with('\n') {
-            result.push('\n');
-        }
-        if !result.is_empty() {
-            result.push('\n');
-        }
-        result.push_str(new_block);
-        result.push('\n');
-        result
-    }
+    let markers = BlockMarkers::with_id("awsenc", profile_name);
+    config_block::upsert_block(existing, &markers, new_block)
 }
 
 fn remove_managed_block(existing: &str, profile_name: &str) -> String {
-    if let Some((start, end)) = managed_block_range(existing, profile_name) {
-        let before = &existing[..start];
-        let after = &existing[end..];
-        // Clean up double newlines
-        let after = after.trim_start_matches('\n');
-        let mut result = before.to_owned();
-        if !result.is_empty() && result.ends_with('\n') && !after.is_empty() {
-            // Keep one newline separator
-        } else if !result.is_empty() && !result.ends_with('\n') && !after.is_empty() {
-            result.push('\n');
-        }
-        result.push_str(after);
-        result
-    } else {
-        existing.to_owned()
-    }
-}
-
-fn managed_block_range(existing: &str, profile_name: &str) -> Option<(usize, usize)> {
-    let escaped = regex::escape(profile_name);
-    let pattern = format!(
-        r"(?ms)^# --- BEGIN awsenc managed \({escaped}\) ---\n.*?^# --- END awsenc managed \({escaped}\) ---\n?"
-    );
-    let re = Regex::new(&pattern).ok()?;
-    re.find(existing).map(|m| (m.start(), m.end()))
+    let markers = BlockMarkers::with_id("awsenc", profile_name);
+    let (result, _status) = config_block::remove_block(existing, &markers);
+    result
 }
 
 fn comment_out_okta_processor_entries(existing: &str) -> String {
@@ -480,17 +444,6 @@ fn comment_out_okta_processor_entries(existing: &str) -> String {
         result.push('\n');
     }
     result
-}
-
-fn quote_credential_process_arg(arg: &str) -> String {
-    if !arg
-        .chars()
-        .any(|c| c.is_whitespace() || c == '"' || c == '\\')
-    {
-        return arg.to_owned();
-    }
-
-    format!("\"{}\"", arg.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 fn write_text_file(path: &std::path::Path, contents: &str) -> Result<()> {
