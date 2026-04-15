@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use enclaveapp_cache::{CacheEntry, CacheFormat};
 use enclaveapp_core::metadata;
 
 use crate::{Error, Result};
@@ -11,8 +12,13 @@ pub const FORMAT_VERSION: u8 = 0x01;
 /// Flag indicating the cache contains an encrypted Okta session.
 pub const FLAG_HAS_OKTA_SESSION: u8 = 0x01;
 
-/// Header size in bytes: 4 (magic) + 1 (version) + 1 (flags) + 8 (cred exp) + 8 (okta exp) = 22
-const HEADER_SIZE: usize = 22;
+/// App-specific header data length: 8 (credential_expiration) + 8 (okta_session_expiration).
+const HEADER_DATA_LEN: usize = 16;
+
+/// Shared cache format instance for awsenc.
+fn cache_format() -> CacheFormat {
+    CacheFormat::new(MAGIC, FORMAT_VERSION)
+}
 
 /// Parsed cache file header (for status display without loading ciphertext).
 #[derive(Debug, Clone)]
@@ -41,117 +47,50 @@ pub struct CacheFile {
 impl CacheFile {
     /// Serialize to the binary cache format.
     pub fn encode(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(
-            HEADER_SIZE
-                + 4
-                + self.aws_ciphertext.len()
-                + 4
-                + self.okta_session_ciphertext.as_ref().map_or(0, Vec::len),
-        );
+        let mut header_data = Vec::with_capacity(HEADER_DATA_LEN);
+        header_data.extend_from_slice(&self.header.credential_expiration.to_be_bytes());
+        header_data.extend_from_slice(&self.header.okta_session_expiration.to_be_bytes());
 
-        // Header
-        buf.extend_from_slice(&self.header.magic);
-        buf.push(self.header.version);
-        buf.push(self.header.flags);
-        buf.extend_from_slice(&self.header.credential_expiration.to_be_bytes());
-        buf.extend_from_slice(&self.header.okta_session_expiration.to_be_bytes());
-
-        // AWS ciphertext length + data
-        let aws_len = u32::try_from(self.aws_ciphertext.len()).unwrap_or(u32::MAX);
-        buf.extend_from_slice(&aws_len.to_be_bytes());
-        buf.extend_from_slice(&self.aws_ciphertext);
-
-        // Okta session ciphertext length + data
-        if let Some(ref okta) = self.okta_session_ciphertext {
-            let okta_len = u32::try_from(okta.len()).unwrap_or(u32::MAX);
-            buf.extend_from_slice(&okta_len.to_be_bytes());
-            buf.extend_from_slice(okta);
-        } else {
-            buf.extend_from_slice(&0_u32.to_be_bytes());
+        let mut blobs = vec![self.aws_ciphertext.clone()];
+        match self.okta_session_ciphertext {
+            Some(ref okta) => blobs.push(okta.clone()),
+            None => blobs.push(vec![]),
         }
 
-        buf
+        let entry = CacheEntry {
+            flags: self.header.flags,
+            header_data,
+            blobs,
+        };
+
+        cache_format().encode(&entry)
     }
 
     /// Deserialize from the binary cache format.
     pub fn decode(data: &[u8]) -> Result<Self> {
-        if data.len() < HEADER_SIZE + 4 {
-            return Err(Error::CacheFormat("data too short for cache header".into()));
-        }
+        let entry = cache_format()
+            .decode(data, HEADER_DATA_LEN)
+            .map_err(|e| Error::CacheFormat(e.to_string()))?;
 
-        let mut magic = [0_u8; 4];
-        magic.copy_from_slice(&data[0..4]);
-        if magic != MAGIC {
-            return Err(Error::CacheFormat(format!(
-                "invalid magic bytes: expected AWSE, got {magic:?}"
-            )));
-        }
-
-        let version = data[4];
-        if version != FORMAT_VERSION {
-            return Err(Error::CacheFormat(format!(
-                "unsupported format version: {version}"
-            )));
-        }
-
-        let flags = data[5];
-        let credential_expiration = u64::from_be_bytes(
-            data[6..14]
-                .try_into()
-                .map_err(|_| Error::CacheFormat("bad credential expiration".into()))?,
-        );
-        let okta_session_expiration = u64::from_be_bytes(
-            data[14..22]
-                .try_into()
-                .map_err(|_| Error::CacheFormat("bad okta session expiration".into()))?,
-        );
+        let credential_expiration =
+            u64::from_be_bytes(entry.header_data[0..8].try_into().map_err(|_| {
+                Error::CacheFormat("bad credential expiration in header_data".into())
+            })?);
+        let okta_session_expiration =
+            u64::from_be_bytes(entry.header_data[8..16].try_into().map_err(|_| {
+                Error::CacheFormat("bad okta session expiration in header_data".into())
+            })?);
 
         let header = CacheHeader {
-            magic,
-            version,
-            flags,
+            magic: MAGIC,
+            version: FORMAT_VERSION,
+            flags: entry.flags,
             credential_expiration,
             okta_session_expiration,
         };
 
-        // AWS ciphertext
-        let mut offset = HEADER_SIZE;
-        if data.len() < offset + 4 {
-            return Err(Error::CacheFormat("truncated AWS ciphertext length".into()));
-        }
-        let aws_len = u32::from_be_bytes(
-            data[offset..offset + 4]
-                .try_into()
-                .map_err(|_| Error::CacheFormat("bad AWS ciphertext length".into()))?,
-        ) as usize;
-        offset += 4;
-
-        if data.len() < offset + aws_len {
-            return Err(Error::CacheFormat("truncated AWS ciphertext data".into()));
-        }
-        let aws_ciphertext = data[offset..offset + aws_len].to_vec();
-        offset += aws_len;
-
-        // Okta session ciphertext
-        let okta_session_ciphertext = if data.len() >= offset + 4 {
-            let okta_len = u32::from_be_bytes(
-                data[offset..offset + 4]
-                    .try_into()
-                    .map_err(|_| Error::CacheFormat("bad okta ciphertext length".into()))?,
-            ) as usize;
-            offset += 4;
-
-            if okta_len > 0 {
-                if data.len() < offset + okta_len {
-                    return Err(Error::CacheFormat("truncated okta ciphertext data".into()));
-                }
-                Some(data[offset..offset + okta_len].to_vec())
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+        let aws_ciphertext = entry.blobs.first().cloned().unwrap_or_default();
+        let okta_session_ciphertext = entry.blobs.get(1).filter(|b| !b.is_empty()).cloned();
 
         Ok(CacheFile {
             header,
@@ -204,38 +143,28 @@ pub fn read_cache_header(profile: &str) -> Result<Option<CacheHeader>> {
         return Ok(None);
     }
 
-    let data = std::fs::read(&path)?;
-    if data.len() < HEADER_SIZE {
-        return Err(Error::CacheFormat("cache file too short for header".into()));
-    }
+    let (flags, header_data) = cache_format()
+        .read_header(&path, HEADER_DATA_LEN)
+        .map_err(|e| Error::CacheFormat(e.to_string()))?
+        .ok_or_else(|| Error::CacheFormat("cache file disappeared during read".into()))?;
 
-    let mut magic = [0_u8; 4];
-    magic.copy_from_slice(&data[0..4]);
-    if magic != MAGIC {
-        return Err(Error::CacheFormat("invalid magic bytes".into()));
-    }
-
-    let version = data[4];
-    if version != FORMAT_VERSION {
-        return Err(Error::CacheFormat(format!(
-            "unsupported format version: {version}"
-        )));
-    }
+    let credential_expiration = u64::from_be_bytes(
+        header_data[0..8]
+            .try_into()
+            .map_err(|_| Error::CacheFormat("bad header".into()))?,
+    );
+    let okta_session_expiration = u64::from_be_bytes(
+        header_data[8..16]
+            .try_into()
+            .map_err(|_| Error::CacheFormat("bad header".into()))?,
+    );
 
     Ok(Some(CacheHeader {
-        magic,
-        version,
-        flags: data[5],
-        credential_expiration: u64::from_be_bytes(
-            data[6..14]
-                .try_into()
-                .map_err(|_| Error::CacheFormat("bad header".into()))?,
-        ),
-        okta_session_expiration: u64::from_be_bytes(
-            data[14..22]
-                .try_into()
-                .map_err(|_| Error::CacheFormat("bad header".into()))?,
-        ),
+        magic: MAGIC,
+        version: FORMAT_VERSION,
+        flags,
+        credential_expiration,
+        okta_session_expiration,
     }))
 }
 
