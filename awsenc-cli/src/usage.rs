@@ -69,7 +69,7 @@ pub fn record_usage(profile: &str) {
 /// Return profile names sorted by `last_used` (most recent first), up to `limit`.
 pub fn get_mru_profiles(data: &UsageData, limit: usize) -> Vec<String> {
     let mut entries: Vec<_> = data.profiles.iter().collect();
-    entries.sort_by(|a, b| b.1.last_used.cmp(&a.1.last_used));
+    entries.sort_by_key(|e| std::cmp::Reverse(e.1.last_used));
     entries
         .into_iter()
         .take(limit)
