@@ -28,6 +28,8 @@ pub(crate) static TEST_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new((
 #[tokio::main]
 #[allow(clippy::print_stderr)]
 async fn main() {
+    enclaveapp_core::process::harden_process();
+
     let filter = tracing_subscriber::EnvFilter::try_from_env("AWSENC_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
 
