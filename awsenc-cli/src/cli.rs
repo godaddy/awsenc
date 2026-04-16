@@ -9,6 +9,11 @@ use clap::{Parser, Subcommand};
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
+
+    /// Force the system keyring backend (Linux only). Bypasses WSL bridge
+    /// and TPM detection. Requires an unlocked keyring session.
+    #[arg(long, global = true)]
+    pub keyring: bool,
 }
 
 #[derive(Subcommand)]

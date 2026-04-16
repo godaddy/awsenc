@@ -46,6 +46,7 @@ async fn main() {
 
 #[allow(clippy::print_stderr, clippy::print_stdout)]
 async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+    let force_keyring = cli.keyring;
     match cli.command {
         Commands::Auth(args) => {
             let profile = resolve_interactive_profile(args.resolved_profile())?;
@@ -53,20 +54,20 @@ async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let profile = config::resolve_alias(&profile, &global);
 
             let biometric = resolve_biometric_for_profile(&profile, args.biometric);
-            let storage = create_storage(biometric)?;
+            let storage = create_storage(biometric, force_keyring)?;
 
             auth::run_auth(&profile, &args, &*storage).await
         }
 
         Commands::Serve(args) => {
             let biometric = resolve_biometric_from_serve(&args);
-            let storage = create_storage(biometric)?;
+            let storage = create_storage(biometric, force_keyring)?;
             serve::run_serve(&args, &*storage).await
         }
 
         Commands::Exec(args) => {
             let biometric = resolve_biometric_from_exec(&args);
-            let storage = create_storage(biometric)?;
+            let storage = create_storage(biometric, force_keyring)?;
             exec::run_exec(&args, &*storage).await
         }
 
@@ -161,6 +162,7 @@ fn resolve_use_selector(selector: &str) -> Result<String, Box<dyn std::error::Er
 
 fn create_storage(
     biometric: bool,
+    force_keyring: bool,
 ) -> Result<Box<dyn EncryptionStorage>, Box<dyn std::error::Error>> {
     let policy = if biometric {
         AccessPolicy::BiometricOnly
@@ -173,6 +175,7 @@ fn create_storage(
         access_policy: policy,
         extra_bridge_paths: vec![],
         keys_dir: None,
+        force_keyring,
     })
     .map_err(|e| format!("failed to initialize secure storage: {e}").into())
 }
