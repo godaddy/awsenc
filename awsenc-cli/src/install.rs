@@ -94,7 +94,6 @@ pub fn run_install(args: &InstallArgs) -> Result<()> {
             biometric: Some(biometric),
         },
         region,
-        secondary_role: None,
     };
 
     // Save profile config
@@ -253,7 +252,6 @@ pub fn run_migrate(args: &MigrateArgs) -> Result<()> {
                 },
                 security: ProfileSecurityConfig::default(),
                 region: entry.region.clone(),
-                secondary_role: None,
             };
 
             config::save_profile_config(&entry.profile_name, &profile_config)?;

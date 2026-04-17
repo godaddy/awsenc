@@ -169,7 +169,6 @@ mod tests {
             },
             security: ProfileSecurityConfig::default(),
             region: Some("us-west-1".into()),
-            secondary_role: None,
         };
 
         // Save

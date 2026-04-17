@@ -124,7 +124,6 @@ async fn obtain_credentials(
     session_token: &Zeroizing<String>,
     resolved: &config::ResolvedConfig,
 ) -> Result<awsenc_core::credential::AwsCredentials> {
-    ensure_supported_secondary_role(resolved)?;
     eprintln!("Getting SAML assertion...");
     let saml_assertion = okta
         .get_saml_assertion(session_token, &resolved.okta_application)
@@ -155,16 +154,6 @@ async fn obtain_credentials(
         .await?;
 
     Ok(creds)
-}
-
-fn ensure_supported_secondary_role(resolved: &config::ResolvedConfig) -> Result<()> {
-    if let Some(role) = resolved.secondary_role.as_deref() {
-        return Err(format!(
-            "secondary_role '{role}' is configured but chained role assumption is not supported yet"
-        )
-        .into());
-    }
-    Ok(())
 }
 
 #[allow(clippy::cast_sign_loss)]
@@ -427,24 +416,5 @@ mod tests {
     fn resolved_profile_none_when_both_empty() {
         let args = default_auth_args();
         assert_eq!(args.resolved_profile(), None);
-    }
-
-    #[test]
-    fn secondary_role_configuration_fails_fast() {
-        let resolved = config::ResolvedConfig {
-            okta_organization: "org.okta.com".into(),
-            okta_user: "user@example.com".into(),
-            okta_application: "https://org.okta.com/app".into(),
-            okta_role: "arn:aws:iam::123:role/Primary".into(),
-            okta_factor: "push".into(),
-            okta_duration: 3600,
-            biometric: false,
-            refresh_window_seconds: 600,
-            secondary_role: Some("arn:aws:iam::456:role/Secondary".into()),
-            region: None,
-        };
-
-        let err = ensure_supported_secondary_role(&resolved).unwrap_err();
-        assert!(err.to_string().contains("secondary_role"));
     }
 }
