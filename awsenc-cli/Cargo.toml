@@ -29,6 +29,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 zeroize = { version = "1", features = ["derive"] }
 rpassword = "7"
 regex = "1"
+fs4 = "0.9"
 
 [build-dependencies]
 enclaveapp-build-support = { workspace = true }
