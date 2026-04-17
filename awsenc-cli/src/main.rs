@@ -62,13 +62,22 @@ async fn dispatch(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
 
         Commands::Serve(args) => {
-            let biometric = resolve_biometric_from_serve(&args);
+            // Validate the profile arg before touching the keychain: this
+            // keeps `awsenc serve` without --profile failing fast at the
+            // arg layer instead of initializing hardware storage and then
+            // erroring. The keychain init (and any associated user-
+            // interaction fallback) is deferred to real work.
+            let profile = serve::resolve_serve_profile(&args)?;
+            let biometric = resolve_biometric_for_profile(&profile, false);
             let storage = create_storage(biometric, force_keyring)?;
             serve::run_serve(&args, &*storage).await
         }
 
         Commands::Exec(args) => {
-            let biometric = resolve_biometric_from_exec(&args);
+            // Same fail-fast pattern as Serve — validate the profile arg
+            // before touching the keychain.
+            let profile = exec::resolve_exec_profile(&args)?;
+            let biometric = resolve_biometric_for_profile(&profile, false);
             let storage = create_storage(biometric, force_keyring)?;
             exec::run_exec(&args, &*storage).await
         }
@@ -197,12 +206,14 @@ fn resolve_biometric_for_profile(profile: &str, cli_biometric: bool) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(test)]
 fn resolve_biometric_from_serve(args: &cli::ServeArgs) -> bool {
     serve::resolve_serve_profile(args)
         .map(|profile| resolve_biometric_for_profile(&profile, false))
         .unwrap_or(false)
 }
 
+#[cfg(test)]
 fn resolve_biometric_from_exec(args: &cli::ExecArgs) -> bool {
     exec::resolve_exec_profile(args)
         .map(|profile| resolve_biometric_for_profile(&profile, false))
