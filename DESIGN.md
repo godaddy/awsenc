@@ -250,9 +250,24 @@ This needs prototyping against GoDaddy's Okta instance to determine what's actua
 
 ### Okta Session Reuse Status
 
-Transparent Okta session reuse is currently disabled. The checked-in runtime
-does not cache a browser session or replay `/authn` session material as a
-cookie. When AWS credentials expire, the user must run `awsenc auth` again.
+Transparent Okta session reuse is implemented and active. After a successful
+`awsenc auth`, the Okta `/authn` session token is encrypted under the
+same hardware-bound key as the AWS credentials and stored in the cache
+alongside the AWS ciphertext (cache flag `FLAG_HAS_OKTA_SESSION`).
+
+When `awsenc serve` sees cached AWS credentials nearing expiration, it
+attempts `try_transparent_reauth` (`awsenc-cli/src/serve.rs:127-204`):
+the cached Okta session token is decrypted, exchanged for a new SAML
+assertion via `get_saml_with_session`, and that assertion is traded at STS
+for fresh AWS credentials — all without prompting the user for password
+or MFA. The resulting cache write reuses the existing Okta-session
+ciphertext (the Okta session itself has a separate, longer lifetime
+enforced by Okta's server side).
+
+When Okta's server-side session lifetime runs out, `/authn` refresh fails
+and awsenc falls back to a full interactive `awsenc auth` flow.
+
+See `THREAT_MODEL.md` §T11 for the security implications.
 
 ---
 

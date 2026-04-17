@@ -183,19 +183,152 @@ encryption only. A compromised user session can extract credentials.
 **Residual risk:** Any process running as the user can access the
 encryption key. This is a known limitation.
 
-### T11: Okta session reuse
+### T11: Okta session reuse (transparent reauth)
 
-**Threat:** A cached Okta browser session or replayable session token is used
-by an attacker to obtain new SAML assertions without MFA.
+**Threat:** awsenc caches an Okta `/authn` session token alongside AWS
+credentials so that `awsenc serve` can silently refresh expiring AWS creds
+without prompting the user for MFA. If the cached Okta session token is
+extracted, the attacker can obtain new SAML assertions and fresh AWS
+credentials for the remaining Okta session lifetime (typically up to 2 hours
+from the last successful MFA).
 
 **Mitigation:**
-- The current implementation does not cache Okta sessions for transparent
-  reuse.
-- Expired AWS credentials require an explicit `awsenc auth` flow.
+- The Okta session token is stored only as ECIES ciphertext in the `.enc`
+  cache file, encrypted under the same hardware-bound key as the AWS
+  credentials (`awsenc-cli/src/auth.rs:180-199`, `serve.rs:127-204`).
+  A file-level read does not reveal the session token.
+- `FLAG_HAS_OKTA_SESSION` gates the behavior: profiles that do not opt into
+  session reuse simply do not populate the Okta-session ciphertext field.
+- Okta server-side lifetime still applies; once Okta expires the session,
+  the reauth path fails over to a full `awsenc auth` prompt.
+- Same hardware key / biometric posture as T6 — a same-UID attacker without
+  the hardware key cannot decrypt the cached session token.
 
-**Residual risk:** Active interactive authentication still handles Okta
-session material in process memory, but there is no repo-owned local session
-replay surface in the cache format.
+**Residual risk:** If the hardware-decrypt path is available to an attacker
+(e.g. running as the user on an unlocked, non-biometric session), the cached
+Okta session token enables a SAML → STS chain without re-entering MFA until
+Okta's own session lifetime runs out. awsenc does not clamp session lifetime
+locally — it trusts Okta's server-supplied expiration. This is the Type 1
+"key accessible while session active" tradeoff, applied to Okta as well as
+AWS.
+
+### T12: SAML / STS XML parser hardening
+
+**Threat:** Attacker-influenced SAML (via a compromised Okta or MITM of the
+AppSSO flow) or STS response XML triggers XXE, billion-laughs, external
+entity fetches, or decoys that smuggle alternate form fields past the
+extractor.
+
+**Mitigation:**
+- SAML form extraction uses the `scraper` HTML parser with a tiered form
+  selector (AWS-action form → POST+RelayState form → single-candidate form)
+  at `awsenc-core/src/okta.rs`. Comment- and script-decoy tests protect
+  against fake `<SAMLResponse>` injected into inert HTML.
+- Decoded SAML XML is parsed by `roxmltree` — a non-validating, DTD-free,
+  namespace-aware parser. XXE and DOCTYPE bombs are structurally rejected.
+- STS responses are parsed by `roxmltree` via `find_text_by_local_name`
+  (`awsenc-core/src/sts.rs`). No regex-based extractors remain.
+
+**Residual risk:** A malicious form inside the SAML assertion that still
+validates as an AWS sign-in form would produce attacker-chosen RoleArn /
+PrincipalArn pairs, but STS enforces that the assertion is signed by a
+trusted IdP so the practical impact is constrained to role selection within
+the user's already-trusted Okta federation.
+
+### T13: HTTP response size limits
+
+**Threat:** A compromised or malicious Okta/STS endpoint streams an unbounded
+response to exhaust awsenc's memory.
+
+**Mitigation:** Both `awsenc-core/src/okta.rs` and
+`awsenc-core/src/sts.rs` cap response bodies at 256 KB via
+`read_response_text`. The cap is enforced **both** on the pre-fetch
+`Content-Length` header **and** in the streaming loop chunk-by-chunk, so
+`Transfer-Encoding: chunked` without a declared length is also bounded.
+
+**Residual risk:** None for memory exhaustion. A truncated SAML or STS
+response still fails subsequent parsing cleanly.
+
+### T14: Local configuration file tamper
+
+**Threat:** A same-UID attacker edits `~/.config/awsenc/config.toml` or a
+profile TOML to swap `organization` (Okta origin) or `application` (SAML app
+URL). On the next `awsenc auth`, the user enters their Okta password into
+a prompt that identifies the correct username but POSTs credentials to a
+look-alike IdP.
+
+**Mitigation:**
+- Config writes use `atomic_write` + `restrict_file_permissions` (0600) via
+  `awsenc-core/src/config.rs`.
+- `validate_okta_organization` enforces bare-host format but is not a
+  whitelist.
+- No config integrity check, no certificate pinning to a specific Okta
+  tenant.
+
+**Residual risk:** Same-UID write access is game-over for most secrets.
+Documented as a trust boundary — `~/.config/awsenc/` must be protected by
+OS-level file permissions and user-side hygiene.
+
+### T15: Concurrent `awsenc serve` race
+
+**Threat:** Two AWS CLI invocations trigger two concurrent `credential_process`
+→ `awsenc serve` calls that each detect the cache in the Refresh / Expired
+state. Both fire STS (and possibly the transparent reauth chain); one wins
+the `atomic_write` rename, the other's work is silently discarded.
+
+**Mitigation:** `atomic_write` ensures the cache is never partially written.
+
+**Residual risk:** Duplicate STS/SAML traffic (minor rate-limit impact,
+wasted Okta quota) and a small window where the losing writer's credentials
+are returned to its caller even though they will be overwritten on the next
+read. No cross-process serve lock is implemented today; adding one is a
+candidate hardening. No credential leakage.
+
+### T16: Cache rollback
+
+**Threat:** An attacker with user-level write access replaces the current
+`<profile>.enc` with an older valid ciphertext they previously exfiltrated.
+The old cache is still well-formed and authenticated; awsenc serves it
+until server-side STS expiration catches up.
+
+**Mitigation:** STS credentials are short-lived (typically 1–12 hours) and
+the AWS service rejects them on the server side when their own `Expiration`
+passes. There is no local anti-rollback counter.
+
+**Residual risk:** An attacker can replay an earlier intact cache for the
+remainder of the STS credentials' server-side lifetime. Accepted risk;
+operators needing shorter windows should shorten `DurationSeconds`.
+
+### T17: Binary discovery / PATH hijack
+
+**Threat:** `awsenc` invokes external helpers that are resolved via `$PATH`
+(e.g. browser openers, package tools). A shim earlier on `$PATH` intercepts
+the call.
+
+**Mitigation:**
+- At current code scope, `awsenc` does not shell out to `gh` / `open` /
+  `$BROWSER` — the `--no-open` flow is an explicit error stub
+  (`awsenc-cli/src/auth.rs:80-87`) pending Phase 6.
+- The TPM bridge is discovered at a fixed path (`/mnt/c/Program Files/awsenc/`)
+  rather than PATH-resolved.
+
+**Residual risk:** If future work adds a `$BROWSER`-launch or
+`open`-crate path, it must be added through `enclaveapp-core::bin_discovery`
+rather than PATH.
+
+### T18: Trusted-consumer boundary (Type 1 limit)
+
+**Threat:** Once awsenc writes AWS credentials to the `credential_process`
+stdout pipe, the consuming AWS CLI / SDK can log, persist, forward, or
+exfiltrate the credentials. awsenc cannot prevent this.
+
+**Mitigation:** None at the protocol boundary. Operators must treat the AWS
+CLI (and anything they configure as `credential_process`) as a
+credential-handling component.
+
+**Residual risk:** Accepted. Type 1 integration places the consumer inside
+awsenc's trusted computing base. This entry exists to make the trust
+boundary explicit rather than implicit.
 
 ## Out of Scope
 
