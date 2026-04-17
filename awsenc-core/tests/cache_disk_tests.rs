@@ -5,7 +5,6 @@ use std::fs;
 use awsenc_core::cache::{CacheFile, CacheHeader, FLAG_HAS_OKTA_SESSION, FORMAT_VERSION, MAGIC};
 use awsenc_core::config::{
     GlobalConfig, OktaConfig, ProfileConfig, ProfileOktaConfig, ProfileSecurityConfig,
-    SecondaryRoleConfig,
 };
 
 // ===========================================================================
@@ -301,9 +300,6 @@ fn config_profile_save_load_roundtrip() {
             biometric: Some(true),
         },
         region: Some("us-west-2".into()),
-        secondary_role: Some(SecondaryRoleConfig {
-            role_arn: "arn:aws:iam::987654321098:role/CrossAccount".into(),
-        }),
     };
 
     let toml_str = toml::to_string_pretty(&config).unwrap();
@@ -329,13 +325,6 @@ fn config_profile_save_load_roundtrip() {
     assert_eq!(loaded.okta.duration, Some(7200));
     assert_eq!(loaded.security.biometric, Some(true));
     assert_eq!(loaded.region.as_deref(), Some("us-west-2"));
-    assert_eq!(
-        loaded
-            .secondary_role
-            .as_ref()
-            .map(|sr| sr.role_arn.as_str()),
-        Some("arn:aws:iam::987654321098:role/CrossAccount")
-    );
 }
 
 #[test]
@@ -354,7 +343,6 @@ fn config_profile_minimal_roundtrip() {
         },
         security: ProfileSecurityConfig::default(),
         region: None,
-        secondary_role: None,
     };
 
     let toml_str = toml::to_string_pretty(&config).unwrap();
@@ -368,7 +356,6 @@ fn config_profile_minimal_roundtrip() {
     assert!(loaded.okta.factor.is_none());
     assert!(loaded.okta.duration.is_none());
     assert!(loaded.security.biometric.is_none());
-    assert!(loaded.secondary_role.is_none());
     assert_eq!(
         loaded.okta.application.as_deref(),
         Some("https://org.okta.com/app")

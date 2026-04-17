@@ -1064,8 +1064,13 @@ GitHub Actions with matrix builds across macOS, Windows, and Linux. Hardware tes
 - Homebrew formula, Scoop manifest.
 - Threat model document.
 - README and user documentation.
-- Secondary role assumption (chained AssumeRole).
 - Optional password manager integration.
+
+Chained role assumption (the aws-okta-processor `--secondary-role`) is
+intentionally not on the roadmap. The migration tool surfaces a warning
+and skips such profiles; operators who need role chaining should
+configure the inner assume-role on the AWS SDK / CLI side using the
+credentials awsenc provides.
 
 ### Phase 6: WebAuthn via Browser Loopback
 

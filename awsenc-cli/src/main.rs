@@ -481,7 +481,6 @@ mod tests {
             },
             security: config::ProfileSecurityConfig::default(),
             region: None,
-            secondary_role: None,
         };
         let dev = config::ProfileConfig {
             okta: config::ProfileOktaConfig {
@@ -494,7 +493,6 @@ mod tests {
             },
             security: config::ProfileSecurityConfig::default(),
             region: None,
-            secondary_role: None,
         };
         config::save_profile_config("prod-admin", &prod).unwrap();
         config::save_profile_config("dev-readonly", &dev).unwrap();
@@ -640,7 +638,6 @@ mod tests {
             },
             security: config::ProfileSecurityConfig::default(),
             region: None,
-            secondary_role: None,
         };
         config::save_profile_config("real-profile", &profile).unwrap();
 

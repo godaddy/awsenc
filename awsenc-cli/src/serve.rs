@@ -153,12 +153,6 @@ async fn try_transparent_reauth(
     let profile_config = config::load_profile_config(profile)?;
     let overrides = ConfigOverrides::from_env();
     let resolved = config::resolve_config(profile, &global, &profile_config, &overrides)?;
-    if let Some(role) = resolved.secondary_role.as_deref() {
-        return Err(format!(
-            "secondary_role '{role}' is configured but chained role assumption is not supported yet"
-        )
-        .into());
-    }
 
     let okta = OktaClient::new(&resolved.okta_organization)?;
     let saml_assertion = okta

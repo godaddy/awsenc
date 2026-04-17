@@ -51,7 +51,6 @@ pub struct ProfileConfig {
     #[serde(default)]
     pub security: ProfileSecurityConfig,
     pub region: Option<String>,
-    pub secondary_role: Option<SecondaryRoleConfig>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -67,11 +66,6 @@ pub struct ProfileOktaConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProfileSecurityConfig {
     pub biometric: Option<bool>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SecondaryRoleConfig {
-    pub role_arn: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -125,7 +119,6 @@ pub struct ResolvedConfig {
     pub okta_duration: u64,
     pub biometric: bool,
     pub refresh_window_seconds: u64,
-    pub secondary_role: Option<String>,
     pub region: Option<String>,
 }
 
@@ -323,11 +316,6 @@ pub fn resolve_config(
 
     let refresh_window_seconds = global.cache.refresh_window_seconds.unwrap_or(600);
 
-    let secondary_role = profile
-        .secondary_role
-        .as_ref()
-        .map(|sr| sr.role_arn.clone());
-
     let region = overrides.region.clone().or_else(|| profile.region.clone());
 
     Ok(ResolvedConfig {
@@ -339,7 +327,6 @@ pub fn resolve_config(
         okta_duration,
         biometric,
         refresh_window_seconds,
-        secondary_role,
         region,
     })
 }
@@ -422,7 +409,6 @@ mod tests {
                 biometric: Some(false),
             },
             region: Some("us-west-2".into()),
-            secondary_role: None,
         };
 
         let overrides = ConfigOverrides::default();
@@ -459,7 +445,6 @@ mod tests {
             },
             security: ProfileSecurityConfig::default(),
             region: None,
-            secondary_role: None,
         };
 
         let overrides = ConfigOverrides {
@@ -602,9 +587,6 @@ mod tests {
                 biometric: Some(true),
             },
             region: Some("us-east-1".into()),
-            secondary_role: Some(SecondaryRoleConfig {
-                role_arn: "arn:aws:iam::456:role/S".into(),
-            }),
         };
 
         let toml_str = toml::to_string_pretty(&config).unwrap();
@@ -616,13 +598,28 @@ mod tests {
         assert_eq!(parsed.okta.user.as_deref(), Some("jane"));
         assert_eq!(parsed.security.biometric, Some(true));
         assert_eq!(parsed.region.as_deref(), Some("us-east-1"));
-        assert_eq!(
-            parsed
-                .secondary_role
-                .as_ref()
-                .map(|sr| sr.role_arn.as_str()),
-            Some("arn:aws:iam::456:role/S")
-        );
+    }
+
+    #[test]
+    fn resolve_config_ignores_legacy_secondary_role_field_in_toml() {
+        // Prior versions of awsenc accepted a `secondary_role` field but
+        // only ever errored at auth time. The field was removed; serde
+        // silently ignores unknown keys so existing TOML with
+        // `secondary_role = ...` still loads cleanly.
+        let toml_with_legacy = r#"
+            region = "us-east-1"
+
+            [okta]
+            user = "jane"
+            application = "https://org.okta.com/app"
+            role = "arn:aws:iam::123:role/R"
+
+            [secondary_role]
+            role_arn = "arn:aws:iam::456:role/Legacy"
+        "#;
+        let parsed: ProfileConfig = toml::from_str(toml_with_legacy).unwrap();
+        assert_eq!(parsed.okta.user.as_deref(), Some("jane"));
+        assert_eq!(parsed.region.as_deref(), Some("us-east-1"));
     }
 
     #[test]
