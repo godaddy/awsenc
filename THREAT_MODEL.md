@@ -144,17 +144,27 @@ in process memory. This is inherent to any credential passing scheme.
 
 ### T8: Encrypted cache tampering
 
-**Threat:** An attacker modifies the `.enc` cache file to extend credential
-validity or alter cached data.
+**Threat:** An attacker modifies the `.enc` cache file (header fields or
+ciphertext) to extend credential validity or replay an older cached
+credential.
 
 **Mitigation:**
-- ECIES ciphertext includes an AES-GCM authentication tag. Tampering with
-  the ciphertext causes decryption failure.
-- The unencrypted cache header (expiration timestamps) controls client-side
-  caching only. AWS STS enforces its own credential expiration independently.
+- ECIES ciphertext includes an AES-GCM authentication tag. Tampering
+  with the ciphertext causes decryption failure.
+- The previously-unauthenticated header (magic, version, flags,
+  credential expiration, Okta session expiration) is now bound into
+  the encrypted envelope via `awsenc_core::cache::wrap_for_encrypt` /
+  `unwrap_after_decrypt`. The envelope format is
+  `[4B "APL1"][32B SHA-256(header bytes)][8B u64 counter][payload]`
+  (`crates/enclaveapp-cache/src/envelope.rs`). Any edit to header
+  fields after encrypt is detected as a hash mismatch and the decrypt
+  result is rejected before bytes cross the caller boundary.
+- AWS STS enforces its own credential expiration independently;
+  server-side `exp` is the ultimate authority on credential validity.
 
-**Residual risk:** Header tampering can extend client-side caching but
-cannot create valid AWS credentials or extend their server-side validity.
+**Residual risk:** Header tampering alone can no longer extend
+client-side caching; it instead surfaces as a decrypt error. Replay of
+an older still-valid ciphertext is addressed by T16 below.
 
 ### T9: WSL bridge compromise
 
@@ -164,11 +174,20 @@ binary that returns fake credentials or steals them.
 **Mitigation:**
 - The bridge path points to `Program Files` which requires admin rights
   to modify on Windows.
+- The bridge client (`crates/enclaveapp-bridge/src/client.rs`) no longer
+  has a `which`-based PATH fallback — discovery is restricted to fixed
+  admin install paths plus the `ENCLAVEAPP_BRIDGE_PATH`
+  (or `{APP}_BRIDGE_PATH`) env-var override.
+- Before spawn, `require_bridge_is_authenticode_signed` parses the PE
+  header's `IMAGE_DIRECTORY_ENTRY_SECURITY` directory and refuses
+  binaries with no Authenticode signature block. Blocks the
+  "attacker compiled their own unsigned bridge" case.
 - The bridge is distributed alongside the main installer.
 
-**Residual risk:** An attacker with admin rights on the Windows host could
-replace the bridge binary. But an attacker with admin rights already
-controls the TPM.
+**Residual risk:** An attacker with Windows admin rights can still
+replace the bridge with a validly-signed-but-malicious binary; full
+`WinVerifyTrust` chain verification is not reachable from the WSL
+side. An attacker with admin rights already controls the TPM anyway.
 
 ### T10: Software fallback weakness (Linux)
 
@@ -273,31 +292,52 @@ OS-level file permissions and user-side hygiene.
 
 **Threat:** Two AWS CLI invocations trigger two concurrent `credential_process`
 → `awsenc serve` calls that each detect the cache in the Refresh / Expired
-state. Both fire STS (and possibly the transparent reauth chain); one wins
-the `atomic_write` rename, the other's work is silently discarded.
+state. Both would otherwise fire STS (and possibly the transparent-reauth
+chain); one wins the `atomic_write` rename, the other's work is silently
+discarded.
 
-**Mitigation:** `atomic_write` ensures the cache is never partially written.
+**Mitigation:**
+- `awsenc serve` acquires an exclusive `fs4` advisory lock on
+  `<profile>.enc.lock` before touching the cache
+  (`awsenc-cli/src/serve.rs::ServeLock`). The second caller blocks
+  until the first releases, then reads the now-fresh cache.
+- `atomic_write` ensures the cache file is never partially written.
 
-**Residual risk:** Duplicate STS/SAML traffic (minor rate-limit impact,
-wasted Okta quota) and a small window where the losing writer's credentials
-are returned to its caller even though they will be overwritten on the next
-read. No cross-process serve lock is implemented today; adding one is a
-candidate hardening. No credential leakage.
+**Residual risk:** None for credential leakage. The lock file itself
+is empty and per-profile; a concurrent removal is benign (the next
+call re-creates it). Cross-host concurrent serve (e.g. NFS home dir)
+is advisory-only — documented as unsupported.
 
 ### T16: Cache rollback
 
 **Threat:** An attacker with user-level write access replaces the current
 `<profile>.enc` with an older valid ciphertext they previously exfiltrated.
-The old cache is still well-formed and authenticated; awsenc serves it
-until server-side STS expiration catches up.
+Before the monotonic counter landed, the old cache would be served until
+server-side STS expiration caught up.
 
-**Mitigation:** STS credentials are short-lived (typically 1–12 hours) and
-the AWS service rejects them on the server side when their own `Expiration`
-passes. There is no local anti-rollback counter.
+**Mitigation:**
+- The encrypted envelope
+  (`crates/enclaveapp-cache/src/envelope.rs`) embeds an 8-byte big-endian
+  monotonic counter in the plaintext before AES-GCM encryption. The
+  counter is bumped on every successful write and persisted in a
+  `<profile>.enc.counter` sidecar, protected by an exclusive `fs4`
+  flock. On decrypt, the embedded counter is compared against the
+  sidecar; if it is strictly less, the load is rejected as `Rollback
+  { observed, expected_at_least }`.
+- STS `Expiration` on the server side remains authoritative, so even
+  a successful rollback within the counter window still expires at
+  the real AWS deadline.
 
-**Residual risk:** An attacker can replay an earlier intact cache for the
-remainder of the STS credentials' server-side lifetime. Accepted risk;
-operators needing shorter windows should shorten `DurationSeconds`.
+**Residual risk:** An attacker who writes BOTH the stale `.enc` and
+the sidecar back simultaneously (or who rolled back the whole
+filesystem snapshot) can still replay within the server-side
+validity window. The sidecar is same-UID-writable by design; that's
+a generic same-UID-compromise risk shared with config files.
+Deletion of the sidecar alone does not help — `next_counter` seeds
+from the highest counter observed in any successfully-decrypted
+ciphertext, so forward progress is preserved after a delete + re-read
+cycle. Operators needing tighter bounds should shorten
+`DurationSeconds`.
 
 ### T17: Binary discovery / PATH hijack
 
