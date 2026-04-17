@@ -90,9 +90,9 @@ struct OktaErrorResponse {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct AuthnRequest {
-    username: String,
-    password: String,
+struct AuthnRequest<'req> {
+    username: &'req str,
+    password: &'req str,
 }
 
 #[derive(Debug, Serialize)]
@@ -233,8 +233,8 @@ impl OktaClient {
     ) -> Result<AuthnResponse> {
         let url = format!("{}/api/v1/authn", self.base_url);
         let body = AuthnRequest {
-            username: username.to_owned(),
-            password: password.as_str().to_owned(),
+            username,
+            password: password.as_str(),
         };
 
         let resp = self
