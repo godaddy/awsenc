@@ -47,8 +47,8 @@ make build
 make install        # installs to /usr/local/bin
 ```
 
-`awsenc` currently builds from the enclosing `libenclaveapp` checkout because
-the workspace depends on sibling crates under `../crates/`.
+`awsenc` builds from the enclosing `libenclaveapp` checkout — the workspace
+depends on sibling crates under `../libenclaveapp/crates/`.
 
 ## Quick Start
 

@@ -59,7 +59,12 @@ pub async fn run_serve(args: &ServeArgs, storage: &dyn EncryptionStorage) -> Res
 
     match state {
         CredentialState::Fresh => {
-            let creds = decrypt_aws_credentials(storage, &cache.aws_ciphertext)?;
+            let creds = decrypt_aws_credentials_with_envelope(
+                &profile,
+                storage,
+                &cache.header,
+                &cache.aws_ciphertext,
+            )?;
             print_credentials(&creds)?;
             usage::record_usage(&profile);
         }
@@ -70,7 +75,12 @@ pub async fn run_serve(args: &ServeArgs, storage: &dyn EncryptionStorage) -> Res
                 }
                 Err(e) => {
                     tracing::debug!("transparent re-auth failed: {e}; using cached credentials");
-                    let creds = decrypt_aws_credentials(storage, &cache.aws_ciphertext)?;
+                    let creds = decrypt_aws_credentials_with_envelope(
+                        &profile,
+                        storage,
+                        &cache.header,
+                        &cache.aws_ciphertext,
+                    )?;
                     print_credentials(&creds)?;
                 }
             }
@@ -119,14 +129,32 @@ pub(crate) fn resolve_serve_profile(args: &ServeArgs) -> Result<String> {
     Err("no profile specified; use --profile <name> or --active".into())
 }
 
+#[cfg(test)]
 fn decrypt_aws_credentials(
     storage: &dyn EncryptionStorage,
+    ciphertext: &[u8],
+) -> Result<AwsCredentials> {
+    // Legacy path: no header-binding or anti-rollback check. Used by
+    // unit tests that construct ciphertexts without the envelope.
+    let plaintext = storage
+        .decrypt(ciphertext)
+        .map_err(|e| format!("failed to decrypt credentials: {e}"))?;
+    let creds: AwsCredentials = serde_json::from_slice(&plaintext)?;
+    Ok(creds)
+}
+
+fn decrypt_aws_credentials_with_envelope(
+    profile: &str,
+    storage: &dyn EncryptionStorage,
+    header: &CacheHeader,
     ciphertext: &[u8],
 ) -> Result<AwsCredentials> {
     let plaintext = storage
         .decrypt(ciphertext)
         .map_err(|e| format!("failed to decrypt credentials: {e}"))?;
-    let creds: AwsCredentials = serde_json::from_slice(&plaintext)?;
+    let min_counter = cache::read_counter(profile).unwrap_or(0);
+    let (_counter, payload) = cache::unwrap_after_decrypt(header, min_counter, &plaintext)?;
+    let creds: AwsCredentials = serde_json::from_slice(&payload)?;
     Ok(creds)
 }
 
@@ -165,7 +193,10 @@ async fn try_transparent_reauth(
     let okta_plaintext = storage
         .decrypt(okta_ct)
         .map_err(|e| format!("failed to decrypt Okta session: {e}"))?;
-    let okta_session: OktaSession = serde_json::from_slice(&okta_plaintext)?;
+    let min_counter = cache::read_counter(profile).unwrap_or(0);
+    let (observed_counter, okta_payload) =
+        cache::unwrap_after_decrypt(&cache.header, min_counter, &okta_plaintext)?;
+    let okta_session: OktaSession = serde_json::from_slice(&okta_payload)?;
 
     let global = config::load_global_config()?;
     let profile_config = config::load_profile_config(profile)?;
@@ -193,24 +224,48 @@ async fn try_transparent_reauth(
         )
         .await?;
 
+    // Build the refreshed cache's new header first so we can bind its
+    // bytes into the re-encrypted credential envelope.
+    let new_header = CacheHeader {
+        magic: MAGIC,
+        version: FORMAT_VERSION,
+        flags: FLAG_HAS_OKTA_SESSION,
+        credential_expiration: creds.expiration.timestamp() as u64,
+        okta_session_expiration: okta_session.expiration.timestamp() as u64,
+    };
+
+    // Bump the monotonic rollback counter. `prior_observed` comes
+    // from the ciphertext we just successfully decrypted above — if
+    // an attacker deleted the sidecar to reset it to 0, the counter
+    // still can't go backwards, because we started from whatever was
+    // embedded in the last good cache.
+    let prior_sidecar = cache::read_counter(profile).unwrap_or(0);
+    let counter = cache::next_counter(prior_sidecar, observed_counter);
+
     let creds_json = serde_json::to_vec(&creds)?;
+    let aws_wrapped = cache::wrap_for_encrypt(&new_header, counter, &creds_json);
     let new_aws_ct = storage
-        .encrypt(&creds_json)
+        .encrypt(&aws_wrapped)
         .map_err(|e| format!("failed to encrypt new credentials: {e}"))?;
 
+    // Re-wrap the okta session under the new header so its envelope
+    // stays consistent with the refreshed header hash.
+    let okta_json = serde_json::to_vec(&okta_session)?;
+    let okta_wrapped = cache::wrap_for_encrypt(&new_header, counter, &okta_json);
+    let new_okta_ct = storage
+        .encrypt(&okta_wrapped)
+        .map_err(|e| format!("failed to re-encrypt Okta session: {e}"))?;
+
     let new_cache = CacheFile {
-        header: CacheHeader {
-            magic: MAGIC,
-            version: FORMAT_VERSION,
-            flags: FLAG_HAS_OKTA_SESSION,
-            credential_expiration: creds.expiration.timestamp() as u64,
-            okta_session_expiration: okta_session.expiration.timestamp() as u64,
-        },
+        header: new_header,
         aws_ciphertext: new_aws_ct,
-        okta_session_ciphertext: cache.okta_session_ciphertext.clone(),
+        okta_session_ciphertext: Some(new_okta_ct),
     };
 
     cache::write_cache(profile, &new_cache)?;
+    if let Err(e) = cache::write_counter(profile, counter) {
+        tracing::warn!("failed to persist rollback-counter sidecar for profile '{profile}': {e}");
+    }
 
     Ok(creds)
 }

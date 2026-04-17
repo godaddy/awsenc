@@ -163,31 +163,54 @@ fn encrypt_and_cache(
     creds: &awsenc_core::credential::AwsCredentials,
     okta_session: Option<&OktaSession>,
 ) -> Result<()> {
+    // Build the cache header up front (without ciphertexts). Its
+    // serialized bytes are bound into the encrypted envelope so
+    // post-encryption header tampering is detected on decrypt.
+    let header = CacheHeader {
+        magic: MAGIC,
+        version: FORMAT_VERSION,
+        flags: if okta_session.is_some() {
+            FLAG_HAS_OKTA_SESSION
+        } else {
+            0
+        },
+        credential_expiration: creds.expiration.timestamp() as u64,
+        okta_session_expiration: okta_session
+            .map_or(0, |session| session.expiration.timestamp() as u64),
+    };
+
+    // Allocate a monotonic counter for rollback detection. The
+    // sidecar may be missing on first write; `next_counter` then
+    // returns 1, which the read side accepts as >= 0.
+    let prior_counter = cache::read_counter(profile).unwrap_or(0);
+    let counter = cache::next_counter(prior_counter, 0);
+
     let creds_json = serde_json::to_vec(creds)?;
-    let aws_ciphertext = storage.encrypt(&creds_json)?;
+    let aws_wrapped = cache::wrap_for_encrypt(&header, counter, &creds_json);
+    let aws_ciphertext = storage.encrypt(&aws_wrapped)?;
+
+    let okta_session_ciphertext = match okta_session {
+        Some(session) => {
+            let okta_json = serde_json::to_vec(session)?;
+            let okta_wrapped = cache::wrap_for_encrypt(&header, counter, &okta_json);
+            Some(storage.encrypt(&okta_wrapped)?)
+        }
+        None => None,
+    };
 
     let cache_file = CacheFile {
-        header: CacheHeader {
-            magic: MAGIC,
-            version: FORMAT_VERSION,
-            flags: if okta_session.is_some() {
-                FLAG_HAS_OKTA_SESSION
-            } else {
-                0
-            },
-            credential_expiration: creds.expiration.timestamp() as u64,
-            okta_session_expiration: okta_session
-                .map_or(0, |session| session.expiration.timestamp() as u64),
-        },
+        header,
         aws_ciphertext,
-        okta_session_ciphertext: okta_session
-            .map(serde_json::to_vec)
-            .transpose()?
-            .map(|json| storage.encrypt(&json))
-            .transpose()?,
+        okta_session_ciphertext,
     };
 
     cache::write_cache(profile, &cache_file)?;
+    // Only bump the counter after a successful write — if the write
+    // fails, the next encrypt reuses the same number and nothing is
+    // skipped.
+    if let Err(e) = cache::write_counter(profile, counter) {
+        tracing::warn!("failed to persist rollback-counter sidecar for profile '{profile}': {e}");
+    }
     Ok(())
 }
 

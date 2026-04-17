@@ -131,7 +131,12 @@ fn get_cached_credentials(
     let plaintext = storage
         .decrypt(&cache.aws_ciphertext)
         .map_err(|e| format!("failed to decrypt credentials: {e}"))?;
-    let creds: AwsCredentials = serde_json::from_slice(&plaintext)?;
+    // Verify the cache header's hash is bound into the decrypted
+    // envelope and that the rollback counter is at least what the
+    // sidecar last saw. Legacy pre-envelope caches pass through.
+    let min_counter = cache::read_counter(profile).unwrap_or(0);
+    let (_counter, payload) = cache::unwrap_after_decrypt(&cache.header, min_counter, &plaintext)?;
+    let creds: AwsCredentials = serde_json::from_slice(&payload)?;
     Ok(Some(creds))
 }
 

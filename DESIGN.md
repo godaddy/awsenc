@@ -283,10 +283,20 @@ Offset  Length  Field
 6       8       Credential expiration  (Unix epoch seconds, big-endian u64)
 14      8       Okta session expiration (Unix epoch seconds, big-endian u64; 0 if no session)
 22      4       AWS ciphertext length (big-endian u32)
-26      var     AWS credential ciphertext (ECIES blob)
+26      var     AWS credential ciphertext (ECIES blob wrapping the APL1 envelope)
 26+N    4       Okta session ciphertext length (big-endian u32; 0 if no session)
 30+N    var     Okta session ciphertext (ECIES blob; present iff FLAG_HAS_OKTA_SESSION)
 ```
+
+Before each payload (AWS credential JSON, Okta session JSON) is passed to `EncryptionStorage::encrypt`, it is wrapped in the shared **authenticated envelope** from `enclaveapp-cache::envelope`:
+
+```
+[4B "APL1"][32B SHA-256(cache header bytes)][8B BE u64 monotonic counter][payload]
+```
+
+The SHA-256 covers the unencrypted cache header (magic through `okta_session_expiration`). Any post-encryption header edit is detected on decrypt as a hash mismatch — the ECIES tag still validates the blob, but `unwrap_after_decrypt` rejects the envelope before yielding bytes to the caller.
+
+The 8-byte counter is bumped on every successful write and persisted in a sibling `<profile>.enc.counter` sidecar guarded by an `fs4` exclusive flock (`awsenc-cli/src/serve.rs`). On read, the embedded counter must be `>= sidecar`; older replayed ciphertexts are rejected as `Rollback { observed, expected_at_least }`. Pre-envelope caches (no `APL1` magic) are accepted transparently with `counter = 0` for migration — the next write upgrades them.
 
 The Okta-session fields enable transparent re-auth (see below): when the AWS credentials approach expiration, `awsenc serve` decrypts the cached Okta session token and exchanges it for a fresh SAML assertion without prompting the user for MFA again.
 
@@ -744,8 +754,8 @@ fmt:        cargo fmt --all -- --check
 clean:      cargo clean
 ```
 
-This source tree currently builds from the enclosing `libenclaveapp`
-checkout because the workspace depends on sibling crates under `../crates/`.
+This source tree builds from the enclosing `libenclaveapp` checkout —
+the workspace depends on sibling crates under `../libenclaveapp/crates/`.
 
 ### Dependencies
 

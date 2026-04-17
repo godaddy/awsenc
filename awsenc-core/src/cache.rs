@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use enclaveapp_cache::envelope::{self, Unwrapped};
 use enclaveapp_cache::{CacheEntry, CacheFormat};
 use enclaveapp_core::metadata;
 
@@ -33,6 +34,25 @@ pub struct CacheHeader {
 impl CacheHeader {
     pub fn has_okta_session(&self) -> bool {
         self.flags & FLAG_HAS_OKTA_SESSION != 0
+    }
+
+    /// Serialize the header to the exact byte sequence that's bound
+    /// into the encrypted payload via the
+    /// [`enclaveapp_cache::envelope`] module.
+    ///
+    /// Shape: `[4 magic][1 version][1 flags][8 credential_expiration][8 okta_session_expiration]`
+    /// (22 bytes). Any future header-field change that's expected to
+    /// be authenticated must be appended here and on both sides of
+    /// the envelope wrap/unwrap call chain.
+    #[must_use]
+    pub fn binding_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(4 + 1 + 1 + 8 + 8);
+        out.extend_from_slice(&self.magic);
+        out.push(self.version);
+        out.push(self.flags);
+        out.extend_from_slice(&self.credential_expiration.to_be_bytes());
+        out.extend_from_slice(&self.okta_session_expiration.to_be_bytes());
+        out
     }
 }
 
@@ -180,6 +200,60 @@ pub fn delete_cache(profile: &str) -> Result<()> {
 /// Validate a profile name: alphanumeric, hyphens, underscores only, max 64 characters.
 pub fn sanitize_profile_name(name: &str) -> Result<String> {
     Ok(crate::config::validate_profile_name(name)?.to_owned())
+}
+
+// ---------------------------------------------------------------------------
+// Envelope helpers (header-binding + anti-rollback counter)
+// ---------------------------------------------------------------------------
+
+/// Wrap `payload` in an envelope bound to `header`, using
+/// `counter` as the rollback sequence number, then return the
+/// bytes suitable for passing to `storage.encrypt(...)`.
+///
+/// The caller is responsible for encrypting the returned buffer
+/// and for bumping the counter sidecar on a successful write.
+#[must_use]
+pub fn wrap_for_encrypt(header: &CacheHeader, counter: u64, payload: &[u8]) -> Vec<u8> {
+    envelope::wrap_plaintext(&header.binding_bytes(), counter, payload)
+}
+
+/// Unwrap the plaintext returned from `storage.decrypt(...)`.
+///
+/// On legacy caches (no envelope magic) the bytes are passed
+/// through verbatim with `counter = 0`. On new caches the header
+/// binding is verified against `header` and the counter is
+/// compared to `min_counter`.
+pub fn unwrap_after_decrypt(
+    header: &CacheHeader,
+    min_counter: u64,
+    decrypted: &[u8],
+) -> Result<(u64, Vec<u8>)> {
+    match envelope::unwrap_plaintext(&header.binding_bytes(), min_counter, decrypted)
+        .map_err(|e| Error::CacheFormat(e.to_string()))?
+    {
+        Unwrapped::Legacy { payload } => Ok((0, payload)),
+        Unwrapped::Versioned { counter, payload } => Ok((counter, payload)),
+    }
+}
+
+/// Read the rollback-counter sidecar for a profile's cache file.
+pub fn read_counter(profile: &str) -> Result<u64> {
+    let cache = cache_path(profile)?;
+    envelope::read_counter(&cache).map_err(|e| Error::CacheFormat(e.to_string()))
+}
+
+/// Write the rollback-counter sidecar for a profile's cache file.
+pub fn write_counter(profile: &str, counter: u64) -> Result<()> {
+    let cache = cache_path(profile)?;
+    envelope::write_counter(&cache, counter).map_err(|e| Error::CacheFormat(e.to_string()))
+}
+
+/// Allocate the next monotonic counter given the last value
+/// observed in the sidecar and the highest counter seen in a
+/// successfully-decrypted ciphertext so far.
+#[must_use]
+pub fn next_counter(sidecar: u64, prior_observed: u64) -> u64 {
+    envelope::next_counter(sidecar, prior_observed)
 }
 
 #[cfg(test)]
