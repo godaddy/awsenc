@@ -148,7 +148,7 @@ WSL Linux                              Windows Host
 
 - Detection: Check `WSL_DISTRO_NAME` env var or `/proc/version` for "microsoft"/"wsl".
 - Bridge path: `/mnt/c/Program Files/awsenc/awsenc-tpm-bridge.exe` or `/mnt/c/ProgramData/awsenc/awsenc-tpm-bridge.exe`.
-- Protocol: JSON-RPC (`init`, `encrypt`, `decrypt`, `destroy` methods).
+- Protocol: JSON-RPC (`init`, `encrypt`, `decrypt`, `destroy` / `delete` methods — `destroy` and `delete` are aliases for backward compatibility).
 
 ---
 
@@ -273,20 +273,22 @@ See `THREAT_MODEL.md` §T11 for the security implications.
 
 ## Credential Cache Format
 
-Binary cache format:
+Binary cache format. `awsenc-core/src/cache.rs` builds on `enclaveapp-cache::CacheFormat`, which emits a common header + length-prefixed blobs. Per-app constants: magic `"AWSE"`, format version `0x01`, flag bit 0 `FLAG_HAS_OKTA_SESSION`.
 
 ```
 Offset  Length  Field
 0       4       Magic bytes: "AWSE" (0x41 0x57 0x53 0x45)
 4       1       Format version: 0x01
-5       1       Flags (bit 0 reserved; currently always 0)
-6       8       Credential expiration (Unix epoch seconds, big-endian)
-14      8       Reserved / set to 0
-22      4       AWS ciphertext length (big-endian)
+5       1       Flags (bit 0 = FLAG_HAS_OKTA_SESSION: "okta session blob follows")
+6       8       Credential expiration  (Unix epoch seconds, big-endian u64)
+14      8       Okta session expiration (Unix epoch seconds, big-endian u64; 0 if no session)
+22      4       AWS ciphertext length (big-endian u32)
 26      var     AWS credential ciphertext (ECIES blob)
-26+N    4       Reserved payload length (currently 0)
-30+N    var     Reserved payload (currently absent)
+26+N    4       Okta session ciphertext length (big-endian u32; 0 if no session)
+30+N    var     Okta session ciphertext (ECIES blob; present iff FLAG_HAS_OKTA_SESSION)
 ```
+
+The Okta-session fields enable transparent re-auth (see below): when the AWS credentials approach expiration, `awsenc serve` decrypts the cached Okta session token and exchanges it for a fresh SAML assertion without prompting the user for MFA again.
 
 ### Cache File Locations
 
@@ -952,6 +954,17 @@ Options:
   -d, --duration <SECONDS>      Default STS session duration
       --region <REGION>         AWS region for this profile
       --biometric               Require biometric for decryption
+      --wizard                  Force the interactive wizard even if all required flags are supplied
+```
+
+### Global flags
+
+Available on every subcommand:
+
+```
+      --keyring                 Force the Linux keyring backend even when a TPM is available
+                                (useful for testing the software fallback or in environments
+                                where the TPM is present but not trusted).
 ```
 
 ### awsenc list
@@ -1026,53 +1039,19 @@ GitHub Actions with matrix builds across macOS, Windows, and Linux. Hardware tes
 
 ## Implementation Phases
 
-### Phase 1: Foundation
+Phases 1–5 are complete. Phase 6 (WebAuthn) is the one remaining roadmap item.
 
-- Workspace skeleton, build system, CI pipeline.
-- `awsenc-secure-storage` with macOS Secure Enclave and mock backends.
-- `awsenc-core` with config loading and cache format.
-- `awsenc-cli` with `config` and `completions` commands.
-- Unit and mock tests.
+### Completed (Phases 1–5)
 
-### Phase 2: Authentication
+- **Phase 1 — Foundation.** Workspace skeleton, build system, CI pipeline. Secure-storage backends via the shared `enclaveapp-app-storage` crate (macOS SE, Windows TPM 2.0, Linux keyring; mock for tests). `awsenc-core` config loading and binary cache format. `awsenc-cli` with all subcommands wired up.
+- **Phase 2 — Authentication.** Okta `/authn` flow with MFA (YubiKey legacy OTP, Okta push, TOTP). AWS STS `AssumeRoleWithSAML`. `awsenc auth` + `awsenc serve` (credential_process output). Mock-server tests for Okta and STS.
+- **Phase 3 — AWS CLI integration.** `awsenc install` / `uninstall` with the `# BEGIN awsenc` / `# END awsenc` managed-block contract in `~/.aws/config`. `awsenc list` / `clear` / `exec` / `shell-init`. Integration tests against the mock servers.
+- **Phase 4 — Windows and cross-platform.** Windows TPM 2.0 backend via the shared `enclaveapp-windows` crate. WSL `awsenc-tpm-bridge` (thin wrapper over `enclaveapp-tpm-bridge`). Linux keyring backend. Windows MSI installer. `shell-init` supports bash / zsh / fish / PowerShell.
+- **Phase 5 — Migration and polish.** `awsenc migrate` for aws-okta-processor → awsenc conversion (skips profiles with `--secondary-role` and surfaces a warning). Homebrew formula and Scoop manifest. `THREAT_MODEL.md` and `SECURITY.md`. User-facing README.
 
-- Okta authentication flow (session, MFA, SAML).
-- MFA factors: YubiKey legacy OTP (priority), Okta push, TOTP.
-- AWS STS `AssumeRoleWithSAML`.
-- `awsenc auth` command.
-- `awsenc serve` command (credential_process output).
-- HTTP mock tests for Okta and STS.
+**Deliberately not on the roadmap:** chained role assumption (aws-okta-processor's `--secondary-role`). Operators who need role chaining should configure the inner assume-role on the AWS SDK / CLI side using the credentials awsenc provides. The `awsenc migrate` tool detects such profiles and skips them with an explicit warning.
 
-### Phase 3: AWS CLI Integration
-
-- `awsenc install` / `awsenc uninstall`.
-- `awsenc list` and `awsenc clear`.
-- `awsenc exec`.
-- Integration tests.
-
-### Phase 4: Windows and Cross-Platform
-
-- Windows TPM backend (`awsenc-secure-storage/windows.rs`).
-- WSL TPM bridge (`awsenc-tpm-bridge`).
-- Linux keyring backend.
-- Windows MSI installer.
-- `awsenc shell-init` for all shells including PowerShell.
-
-### Phase 5: Migration and Polish
-
-- `awsenc migrate` command.
-- Homebrew formula, Scoop manifest.
-- Threat model document.
-- README and user documentation.
-- Optional password manager integration.
-
-Chained role assumption (the aws-okta-processor `--secondary-role`) is
-intentionally not on the roadmap. The migration tool surfaces a warning
-and skips such profiles; operators who need role chaining should
-configure the inner assume-role on the AWS SDK / CLI side using the
-credentials awsenc provides.
-
-### Phase 6: WebAuthn via Browser Loopback
+### Phase 6 (open): WebAuthn via browser loopback
 
 - Implement local HTTP server (bind `127.0.0.1`, random port, short-lived).
 - Prototype against GoDaddy's Okta to determine the right auth endpoint:
@@ -1092,6 +1071,6 @@ credentials awsenc provides.
 
 2. **WebAuthn/FIDO2 for Okta MFA.** Known broken in GoDaddy's Okta API -- the verify callback doesn't fire after the user completes the WebAuthn flow in the browser. Works fine in the browser-based AWS console flow (Okta handles it natively). Deferred until we can diagnose whether this is an Okta Classic vs Identity Engine issue, a GoDaddy configuration gap, or an API limitation. Options: local CTAP2, embedded WebView, or loopback redirect server.
 
-3. **Concurrent profile access.** If multiple terminal sessions call `awsenc serve` for the same profile simultaneously, the cache file needs safe concurrent access. File locking (flock/LockFileEx) should suffice since operations are fast.
+3. ~~**Concurrent profile access.**~~ **Resolved.** `awsenc serve` now takes an exclusive advisory lock on `<cache>.lock` for the per-profile cache file via `fs4` (cross-platform `flock` / `LockFileEx`). Two concurrent `credential_process` invocations on the same profile serialize — the second caller blocks on `lock_exclusive`, then re-reads the already-refreshed cache.
 
 4. **AWS SSO / IAM Identity Center.** Some teams may be migrating from Okta SAML to native AWS SSO. Should `awsenc` also support the AWS SSO OIDC flow as an alternative auth backend? This could be a future extension but shouldn't complicate the initial design.
