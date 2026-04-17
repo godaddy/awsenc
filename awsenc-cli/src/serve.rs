@@ -1,8 +1,4 @@
-use std::fs::{self, OpenOptions};
-use std::path::{Path, PathBuf};
-
 use chrono::{TimeZone, Utc};
-use fs4::fs_std::FileExt;
 
 use awsenc_core::cache::{
     self, CacheFile, CacheHeader, FLAG_HAS_OKTA_SESSION, FORMAT_VERSION, MAGIC,
@@ -12,6 +8,9 @@ use awsenc_core::credential::{AwsCredentials, CredentialProcessOutput, Credentia
 use awsenc_core::okta::{OktaClient, OktaSession};
 use awsenc_core::sts::{self, StsClient};
 use enclaveapp_app_storage::EncryptionStorage;
+use fs4::fs_std::FileExt;
+use std::fs::{self, OpenOptions};
+use std::path::{Path, PathBuf};
 
 use crate::cli::ServeArgs;
 use crate::usage;
@@ -23,16 +22,22 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 /// Outputs JSON to stdout. Never prompts for input. Never prints anything to
 /// stdout except the credential JSON.
 ///
-/// Concurrent `awsenc serve` invocations for the same profile are serialized
-/// with an exclusive advisory file lock on `<profile>.enc.lock`. Two parallel
-/// AWS CLI calls that both see the cache as Refresh/Expired would otherwise
-/// each fire the STS / transparent-reauth chain; the lock collapses them so
-/// only one does the work and the second reads the refreshed cache.
+/// Serialized per-profile with an exclusive advisory file lock
+/// (`<cache>.lock`). When two AWS CLI invocations fire
+/// `credential_process = awsenc serve` concurrently on the same profile
+/// and the cache is in Refresh or Expired state, without the lock both
+/// paths hit STS (and possibly the Okta transparent-reauth chain) —
+/// wasting STS quota, risking Okta rate limits, and causing one
+/// writer's fresh cache to be silently overwritten. With the lock, the
+/// second caller blocks until the first finishes, then re-reads the
+/// already-refreshed cache and returns.
 #[allow(clippy::print_stderr)]
 pub async fn run_serve(args: &ServeArgs, storage: &dyn EncryptionStorage) -> Result<()> {
     let profile = resolve_serve_profile(args)?;
 
-    let lock_path = serve_lock_path(&profile)?;
+    let lock_path = cache::cache_path(&profile)
+        .map(serve_lock_path_for_cache)
+        .unwrap_or_else(|_| PathBuf::from(format!("/tmp/awsenc-{profile}.lock")));
     let _guard = ServeLock::acquire(&lock_path)?;
 
     let Some(cache) = cache::read_cache(&profile)? else {
@@ -95,49 +100,6 @@ pub async fn run_serve(args: &ServeArgs, storage: &dyn EncryptionStorage) -> Res
     }
 
     Ok(())
-}
-
-/// Lock file path: sibling of the cache file, named `<profile>.enc.lock`.
-fn serve_lock_path(profile: &str) -> Result<PathBuf> {
-    let mut path = cache::cache_path(profile)?;
-    let mut name = path
-        .file_name()
-        .map(|n| n.to_os_string())
-        .unwrap_or_default();
-    name.push(".lock");
-    path.set_file_name(name);
-    Ok(path)
-}
-
-/// Exclusive file lock held for the duration of a single serve invocation.
-/// The lock file itself is empty; its only job is to advisory-lock the inode.
-struct ServeLock {
-    file: fs::File,
-}
-
-impl ServeLock {
-    fn acquire(path: &Path) -> Result<Self> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("creating lock directory {}: {e}", parent.display()))?;
-        }
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path)
-            .map_err(|e| format!("opening lock file {}: {e}", path.display()))?;
-        FileExt::lock_exclusive(&file)
-            .map_err(|e| format!("acquiring exclusive lock on {}: {e}", path.display()))?;
-        Ok(Self { file })
-    }
-}
-
-impl Drop for ServeLock {
-    fn drop(&mut self) {
-        drop(FileExt::unlock(&self.file));
-    }
 }
 
 pub(crate) fn resolve_serve_profile(args: &ServeArgs) -> Result<String> {
@@ -306,6 +268,49 @@ async fn try_transparent_reauth(
     }
 
     Ok(creds)
+}
+
+/// Derive the per-profile serve lock path from its cache path.
+fn serve_lock_path_for_cache(cache_path: PathBuf) -> PathBuf {
+    let mut path = cache_path;
+    let mut name = path
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_default();
+    name.push(".lock");
+    path.set_file_name(name);
+    path
+}
+
+/// Exclusive advisory lock held for the duration of a single
+/// `awsenc serve` invocation so that concurrent `credential_process`
+/// calls from parallel AWS CLI commands don't duplicate STS / Okta
+/// traffic. Released on drop.
+struct ServeLock {
+    file: fs::File,
+}
+
+impl ServeLock {
+    fn acquire(path: &Path) -> Result<Self> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)?;
+        FileExt::lock_exclusive(&file)
+            .map_err(|e| format!("acquiring serve lock on {}: {e}", path.display()))?;
+        Ok(Self { file })
+    }
+}
+
+impl Drop for ServeLock {
+    fn drop(&mut self) {
+        drop(FileExt::unlock(&self.file));
+    }
 }
 
 #[cfg(test)]
