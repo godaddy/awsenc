@@ -39,4 +39,4 @@ assert_cmd = "2"
 predicates = "3"
 tempfile = "3"
 toml = "0.8"
-enclaveapp-app-storage = { workspace = true, features = ["mock"] }
+enclaveapp-app-storage = { workspace = true }
