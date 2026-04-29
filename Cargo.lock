@@ -714,6 +714,7 @@ dependencies = [
  "enclaveapp-windows",
  "enclaveapp-wsl",
  "rand 0.9.3",
+ "sha2",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -731,6 +732,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]
