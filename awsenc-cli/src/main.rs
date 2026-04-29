@@ -187,6 +187,18 @@ fn create_storage(
         extra_bridge_paths: vec![],
         keys_dir: None,
         force_keyring,
+        // CLI tools cannot enable the user-presence wrapping-key gate:
+        // the Data Protection keychain (which actually accepts a
+        // .userPresence ACL on the wrapping-key item) requires the
+        // restricted `keychain-access-groups` entitlement, and AMFI
+        // refuses to launch a binary carrying that entitlement without
+        // a matching provisioning profile — which Apple does not issue
+        // for raw CLI binaries distributed via Homebrew tarballs. Stay
+        // on the legacy keychain (no userPresence ACL) and accept the
+        // "Always Allow" dialog flow on signature changes.
+        wrapping_key_user_presence: false,
+        wrapping_key_cache_ttl: std::time::Duration::ZERO,
+        keychain_access_group: None,
     })
     .map_err(|e| format!("failed to initialize secure storage: {e}").into())
 }

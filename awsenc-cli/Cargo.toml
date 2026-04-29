@@ -16,8 +16,8 @@ awsenc-core = { path = "../awsenc-core" }
 enclaveapp-core = { workspace = true }
 enclaveapp-app-storage = { workspace = true }
 enclaveapp-wsl = { workspace = true }
-clap = { version = "4", features = ["derive", "env", "string"] }
-clap_complete = "4"
+clap = { workspace = true }
+clap_complete = { workspace = true }
 tokio = { version = "1", features = ["full"] }
 crossterm = "0.27"
 serde = { version = "1", features = ["derive"] }

@@ -42,6 +42,8 @@ unused_macro_rules = "warn"
 variant_size_differences = "warn"
 
 [workspace.dependencies]
+clap = { version = "4", features = ["derive", "env", "string"] }
+clap_complete = "4"
 enclaveapp-core = { path = "../libenclaveapp/crates/enclaveapp-core" }
 enclaveapp-apple = { path = "../libenclaveapp/crates/enclaveapp-apple" }
 enclaveapp-windows = { path = "../libenclaveapp/crates/enclaveapp-windows" }
