@@ -199,6 +199,12 @@ fn create_storage(
         wrapping_key_user_presence: false,
         wrapping_key_cache_ttl: std::time::Duration::ZERO,
         keychain_access_group: None,
+        // awsenc keeps the existing libenclaveapp default. `true` would
+        // switch the Windows UX from the legacy CryptUI password protector
+        // dialog to a UserConsentVerifier soft Hello prompt — see
+        // `enclaveapp_app_storage::StorageConfig::prefer_windows_hello_ux`
+        // for the threat-model trade-off before flipping this.
+        prefer_windows_hello_ux: false,
     })
     .map_err(|e| format!("failed to initialize secure storage: {e}").into())
 }
